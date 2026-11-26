@@ -6,7 +6,11 @@ import {
   deduplicateStations,
   discoverNearbyExternalEvChargers,
 } from "@/features/search/nearby-chargers.service";
-import { computeInAppRoute } from "@/lib/in-app-navigation";
+import {
+  computeInAppRoute,
+  getNavigationProgress,
+  type InAppRoute,
+} from "@/lib/in-app-navigation";
 import { resetDbForTests, ensureDatabaseReady } from "@/db";
 import { facilities } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -550,5 +554,50 @@ describe("Search validation, nearby EV discovery, radius & authenticity", () => 
     expect(json.error.code).toBe("PROVIDER_UNAVAILABLE");
     expect(json.error.message).toContain("openStreetMapOverpass");
     expect(json.error.details.providerErrors).toHaveLength(1);
+  });
+
+  it("tracks live navigation progress, active step, off-route detection, and arrival", () => {
+    const sampleRoute: InAppRoute = {
+      destinationId: "india-ev-347",
+      destinationName: "Haveli Station",
+      origin: { lat: 31.256, lng: 75.7 },
+      destination: { lat: 31.278, lng: 75.676 },
+      coordinates: [
+        [31.256, 75.7],
+        [31.267, 75.688],
+        [31.278, 75.676],
+      ],
+      distanceKm: 3.3,
+      durationMinutes: 6,
+      steps: [
+        { instruction: "Head north onto NH-44", distanceMeters: 1600, location: [31.256, 75.7] },
+        { instruction: "Turn left into Haveli", distanceMeters: 1700, location: [31.267, 75.688] },
+        { instruction: "Arrive at EV charging destination", distanceMeters: 0, location: [31.278, 75.676] },
+      ],
+      source: "OSRM",
+    };
+
+    // Mid-way along route (~1.65 km left, near second maneuver)
+    const mid = getNavigationProgress(sampleRoute, {
+      lat: 31.267,
+      lng: 75.688,
+      speedMps: 15, // 54 km/h
+    });
+    expect(mid.offRoute).toBe(false);
+    expect(mid.arrived).toBe(false);
+    expect(mid.remainingDistanceKm).toBeGreaterThan(1.4);
+    expect(mid.remainingDistanceKm).toBeLessThan(2.0);
+    expect(mid.currentStepIndex).toBe(2);
+
+    // Off-route (> 500 m west of corridor)
+    const off = getNavigationProgress(sampleRoute, { lat: 31.267, lng: 75.68 });
+    expect(off.offRoute).toBe(true);
+    expect(off.distanceFromRouteKm).toBeGreaterThan(0.5);
+
+    // Arrived within 50 m of destination
+    const arrived = getNavigationProgress(sampleRoute, { lat: 31.2781, lng: 75.6761 });
+    expect(arrived.arrived).toBe(true);
+    expect(arrived.remainingDistanceKm).toBe(0);
+    expect(arrived.remainingMinutes).toBe(0);
   });
 });

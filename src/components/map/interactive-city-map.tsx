@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import type { FacilitySearchResultItem } from "@/features/search/search.service";
 import type { ExternalEvChargerStation } from "@/features/search/nearby-chargers.shared";
-import type { InAppRoute } from "@/lib/in-app-navigation";
+import type { InAppRoute, LiveGpsSample } from "@/lib/in-app-navigation";
 import { formatPaise, getFacilityPhoto } from "@/lib/utils";
 import { Button } from "@/components/ui/primitives";
 
@@ -30,6 +30,10 @@ interface MapProps {
   selectedId: string | null;
   onSelectFacility: (id: string) => void;
   userLocation: { lat: number; lng: number } | null;
+  livePosition?: LiveGpsSample | null;
+  navigationTracking?: boolean;
+  followUser?: boolean;
+  onToggleFollowUser?: (follow: boolean) => void;
   isDefaultLocation?: boolean;
   radiusKm?: number;
   locationStatus?: "idle" | "prompting" | "granted" | "denied";
@@ -60,6 +64,10 @@ export function InteractiveCityMap({
   selectedId,
   onSelectFacility,
   userLocation,
+  livePosition = null,
+  navigationTracking = false,
+  followUser = false,
+  onToggleFollowUser,
   isDefaultLocation = false,
   radiusKm = 25,
   locationStatus = "idle",
@@ -76,6 +84,11 @@ export function InteractiveCityMap({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
   const layerGroupRef = useRef<import("leaflet").LayerGroup | null>(null);
+  const lastFittedRouteKeyRef = useRef<string | null>(null);
+  const onToggleFollowUserRef = useRef(onToggleFollowUser);
+  useEffect(() => {
+    onToggleFollowUserRef.current = onToggleFollowUser;
+  }, [onToggleFollowUser]);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [mapReady, setMapReady] = useState(false);
   const [promptDismissed, setPromptDismissed] = useState(false);
@@ -114,6 +127,9 @@ export function InteractiveCityMap({
       }).addTo(map);
 
       const group = L.layerGroup().addTo(map);
+      map.on("dragstart", () => {
+        onToggleFollowUserRef.current?.(false);
+      });
       mapRef.current = map;
       layerGroupRef.current = group;
       setMapReady(true);
@@ -132,21 +148,34 @@ export function InteractiveCityMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-center map when route, user location, radius, or facilities update
+  // Re-center map when route, live navigation position, user location, radius, or facilities update
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
 
     if (activeRoute && activeRoute.coordinates.length >= 2 && typeof window !== "undefined") {
-      void import("leaflet").then((L) => {
-        if (!mapRef.current) return;
-        mapRef.current.fitBounds(L.latLngBounds(activeRoute.coordinates), {
-          padding: [56, 56],
-          maxZoom: 15,
+      const routeKey = `${activeRoute.destinationId}:${activeRoute.coordinates.length}`;
+      if (followUser && livePosition) {
+        map.setView([livePosition.lat, livePosition.lng], Math.max(map.getZoom(), 15), {
+          animate: true,
         });
-      });
+        lastFittedRouteKeyRef.current = routeKey;
+        return;
+      }
+      if (lastFittedRouteKeyRef.current !== routeKey) {
+        lastFittedRouteKeyRef.current = routeKey;
+        void import("leaflet").then((L) => {
+          if (!mapRef.current) return;
+          mapRef.current.fitBounds(L.latLngBounds(activeRoute.coordinates), {
+            padding: [56, 56],
+            maxZoom: 15,
+          });
+        });
+      }
       return;
     }
+
+    lastFittedRouteKeyRef.current = null;
 
     if (userLocation) {
       const targetZoom =
@@ -166,7 +195,7 @@ export function InteractiveCityMap({
         }
       });
     }
-  }, [mapReady, activeRoute, userLocation, radiusKm, facilities]);
+  }, [mapReady, activeRoute, followUser, livePosition, userLocation, radiusKm, facilities]);
 
   // Render live pins (user GPS, ParkSmart facilities, India EV / BEE / OSM / OCM EV chargers, optional heatmap)
   useEffect(() => {
@@ -179,25 +208,43 @@ export function InteractiveCityMap({
       if (cancelled || !group) return;
       group.clearLayers();
 
-      // User location dot + active search radius circle (matches Distance slider)
-      if (userLocation) {
-        L.circle([userLocation.lat, userLocation.lng], {
-          radius: Math.max(500, radiusKm * 1000),
-          color: "#2563EB",
-          fillColor: "#3B82F6",
-          fillOpacity: 0.06,
-          weight: 1.5,
-        }).addTo(group);
+      const activeUserPos = livePosition ?? userLocation;
 
+      // User location dot + active search radius circle (matches Distance slider)
+      if (activeUserPos) {
+        if (!activeRoute) {
+          L.circle([activeUserPos.lat, activeUserPos.lng], {
+            radius: Math.max(500, radiusKm * 1000),
+            color: "#2563EB",
+            fillColor: "#3B82F6",
+            fillOpacity: 0.06,
+            weight: 1.5,
+          }).addTo(group);
+        }
+
+        const hasHeading =
+          typeof livePosition?.heading === "number" &&
+          Number.isFinite(livePosition.heading);
+        const arrowHtml = hasHeading
+          ? `<div style="position:absolute;inset:-8px;transform:rotate(${Math.round(
+              livePosition!.heading!
+            )}deg);pointer-events:none;"><div style="width:0;height:0;margin:0 auto;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #1D4ED8;"></div></div>`
+          : "";
         const userIcon = L.divIcon({
           className: "parksmart-user-pin",
-          html: `<div style="width:18px;height:18px;border-radius:9999px;background:#2563EB;border:3px solid #fff;box-shadow:0 0 0 6px rgba(37,99,235,0.25);"></div>`,
+          html: `<div style="position:relative;width:18px;height:18px;border-radius:9999px;background:#2563EB;border:3px solid #fff;box-shadow:0 0 0 ${
+            navigationTracking ? "8px rgba(37,99,235,0.32)" : "6px rgba(37,99,235,0.25)"
+          };">${arrowHtml}</div>`,
           iconSize: [18, 18],
           iconAnchor: [9, 9],
         });
-        L.marker([userLocation.lat, userLocation.lng], { icon: userIcon })
+        L.marker([activeUserPos.lat, activeUserPos.lng], { icon: userIcon, zIndexOffset: 900 })
           .bindTooltip(
-            isDefaultLocation ? "Default Center (Not GPS)" : "Your Search Location"
+            navigationTracking
+              ? "Live GPS Position"
+              : isDefaultLocation
+                ? "Default Center (Not GPS)"
+                : "Your Search Location"
           )
           .addTo(group);
       }
@@ -278,6 +325,8 @@ export function InteractiveCityMap({
     mapReady,
     selectedId,
     userLocation,
+    livePosition,
+    navigationTracking,
     isDefaultLocation,
     radiusKm,
     showHeatmap,
@@ -635,13 +684,19 @@ export function InteractiveCityMap({
 
         <button
           type="button"
-          onClick={onLocateUser}
+          onClick={() => {
+            if (activeRoute && onToggleFollowUser && !followUser) {
+              onToggleFollowUser(true);
+              return;
+            }
+            onLocateUser();
+          }}
           className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-800 shadow-md hover:bg-slate-50 cursor-pointer"
-          title="Use my current location"
-          aria-label="Use my current location"
+          title={activeRoute && !followUser ? "Re-center on live route" : "Use my current location"}
+          aria-label={activeRoute && !followUser ? "Re-center on live route" : "Use my current location"}
         >
           <LocateFixed className="h-3.5 w-3.5 text-blue-600" />
-          Use My Location
+          {activeRoute && !followUser ? "Re-center" : "Use My Location"}
         </button>
       </div>
     </div>

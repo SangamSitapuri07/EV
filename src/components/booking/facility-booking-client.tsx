@@ -19,7 +19,12 @@ import {
   Navigation,
 } from "lucide-react";
 import { Badge, Button, Card, Input, StatusPill } from "@/components/ui/primitives";
-import { computeInAppRoute, type InAppRoute } from "@/lib/in-app-navigation";
+import {
+  computeInAppRoute,
+  getNavigationProgress,
+  type InAppRoute,
+  type LiveGpsSample,
+} from "@/lib/in-app-navigation";
 import { formatPaise, getFacilityGallery } from "@/lib/utils";
 import type { PriceBreakdown } from "@/features/pricing/pricing.service";
 
@@ -369,8 +374,26 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
   const miniMapInstanceRef = useRef<import("leaflet").Map | null>(null);
   const miniRouteLayerRef = useRef<import("leaflet").LayerGroup | null>(null);
   const [inAppRoute, setInAppRoute] = useState<InAppRoute | null>(null);
+  const [livePosition, setLivePosition] = useState<LiveGpsSample | null>(null);
+  const [watchFailed, setWatchFailed] = useState(false);
+  const [followUser, setFollowUser] = useState(true);
   const [routingBusy, setRoutingBusy] = useState(false);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
+  const lastRerouteAtRef = useRef<number>(0);
+  const miniLastFittedKeyRef = useRef<string | null>(null);
+  const inAppRouteRef = useRef<InAppRoute | null>(null);
+  useEffect(() => {
+    inAppRouteRef.current = inAppRoute;
+  }, [inAppRoute]);
+  const inAppRouteDestId = inAppRoute?.destinationId ?? null;
+  const navigationTracking = Boolean(
+    inAppRouteDestId &&
+      !watchFailed &&
+      typeof window !== "undefined" &&
+      window.isSecureContext &&
+      typeof navigator !== "undefined" &&
+      navigator.geolocation?.watchPosition
+  );
   const baseRule = initial.pricingRules[0];
   const avgRating =
     initial.reviews.length > 0
@@ -402,6 +425,9 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
         iconAnchor: [14, 14],
       });
       L.marker([fac.latitude, fac.longitude], { icon: pin }).addTo(mapInstance);
+      mapInstance.on("dragstart", () => {
+        setFollowUser(false);
+      });
       miniMapInstanceRef.current = mapInstance;
       miniRouteLayerRef.current = L.layerGroup().addTo(mapInstance);
     });
@@ -414,6 +440,62 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
   }, [fac.latitude, fac.longitude]);
 
   useEffect(() => {
+    if (
+      !inAppRouteDestId ||
+      typeof window === "undefined" ||
+      !window.isSecureContext ||
+      typeof navigator === "undefined" ||
+      !navigator.geolocation?.watchPosition
+    ) {
+      return;
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        setWatchFailed(false);
+        const sample: LiveGpsSample = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          heading: pos.coords.heading ?? null,
+          speedMps: pos.coords.speed ?? null,
+          accuracyMeters: pos.coords.accuracy ?? null,
+          timestamp: pos.timestamp,
+        };
+        setLivePosition(sample);
+
+        const currentRoute = inAppRouteRef.current;
+        if (!currentRoute) return;
+        const progress = getNavigationProgress(currentRoute, sample);
+        if (
+          progress.offRoute &&
+          !progress.arrived &&
+          Date.now() - lastRerouteAtRef.current > 15_000
+        ) {
+          lastRerouteAtRef.current = Date.now();
+          void computeInAppRoute({
+            destinationId: currentRoute.destinationId,
+            destinationName: currentRoute.destinationName,
+            originLat: sample.lat,
+            originLng: sample.lng,
+            destLat: fac.latitude,
+            destLng: fac.longitude,
+          }).then((updated) => {
+            if (inAppRouteRef.current) setInAppRoute(updated);
+          });
+        }
+      },
+      () => {
+        setWatchFailed(true);
+      },
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [inAppRouteDestId, fac.latitude, fac.longitude]);
+
+  useEffect(() => {
     const map = miniMapInstanceRef.current;
     const group = miniRouteLayerRef.current;
     if (!map || !group || typeof window === "undefined") return;
@@ -421,16 +503,26 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
       if (!miniRouteLayerRef.current || !miniMapInstanceRef.current) return;
       miniRouteLayerRef.current.clearLayers();
       if (!inAppRoute || inAppRoute.coordinates.length < 2) {
+        miniLastFittedKeyRef.current = null;
         miniMapInstanceRef.current.setView([fac.latitude, fac.longitude], 15);
         return;
       }
+      const userPt = livePosition ?? inAppRoute.origin;
+      const hasHeading =
+        typeof livePosition?.heading === "number" &&
+        Number.isFinite(livePosition.heading);
+      const arrowHtml = hasHeading
+        ? `<div style="position:absolute;inset:-6px;transform:rotate(${Math.round(
+            livePosition!.heading!
+          )}deg);pointer-events:none;"><div style="width:0;height:0;margin:0 auto;border-left:4px solid transparent;border-right:4px solid transparent;border-bottom:7px solid #1D4ED8;"></div></div>`
+        : "";
       const userPin = L.divIcon({
         className: "parksmart-user-pin",
-        html: `<div style="width:14px;height:14px;border-radius:9999px;background:#2563EB;border:2px solid #fff;box-shadow:0 0 0 4px rgba(37,99,235,0.25);"></div>`,
+        html: `<div style="position:relative;width:14px;height:14px;border-radius:9999px;background:#2563EB;border:2px solid #fff;box-shadow:0 0 0 4px rgba(37,99,235,0.25);">${arrowHtml}</div>`,
         iconSize: [14, 14],
         iconAnchor: [7, 7],
       });
-      L.marker([inAppRoute.origin.lat, inAppRoute.origin.lng], { icon: userPin }).addTo(
+      L.marker([userPt.lat, userPt.lng], { icon: userPin, zIndexOffset: 900 }).addTo(
         miniRouteLayerRef.current
       );
       L.polyline(inAppRoute.coordinates, {
@@ -438,12 +530,24 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
         weight: 4,
         opacity: 0.9,
       }).addTo(miniRouteLayerRef.current);
-      miniMapInstanceRef.current.fitBounds(L.latLngBounds(inAppRoute.coordinates), {
-        padding: [28, 28],
-        maxZoom: 15,
-      });
+
+      const routeKey = `${inAppRoute.destinationId}:${inAppRoute.coordinates.length}`;
+      if (followUser && livePosition) {
+        miniMapInstanceRef.current.setView(
+          [livePosition.lat, livePosition.lng],
+          Math.max(miniMapInstanceRef.current.getZoom(), 15),
+          { animate: true }
+        );
+        miniLastFittedKeyRef.current = routeKey;
+      } else if (miniLastFittedKeyRef.current !== routeKey) {
+        miniLastFittedKeyRef.current = routeKey;
+        miniMapInstanceRef.current.fitBounds(L.latLngBounds(inAppRoute.coordinates), {
+          padding: [28, 28],
+          maxZoom: 15,
+        });
+      }
     });
-  }, [inAppRoute, fac.latitude, fac.longitude]);
+  }, [inAppRoute, livePosition, followUser, fac.latitude, fac.longitude]);
 
   function handleShowInAppDirections() {
     setRouteNotice(null);
@@ -459,11 +563,23 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         try {
+          const sample: LiveGpsSample = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            heading: pos.coords.heading ?? null,
+            speedMps: pos.coords.speed ?? null,
+            accuracyMeters: pos.coords.accuracy ?? null,
+            timestamp: pos.timestamp,
+          };
+          setLivePosition(sample);
+          setFollowUser(true);
+          setWatchFailed(false);
+          lastRerouteAtRef.current = Date.now();
           const route = await computeInAppRoute({
             destinationId: fac.id,
             destinationName: fac.name,
-            originLat: pos.coords.latitude,
-            originLng: pos.coords.longitude,
+            originLat: sample.lat,
+            originLng: sample.lng,
             destLat: fac.latitude,
             destLng: fac.longitude,
           });
@@ -479,6 +595,10 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
       { enableHighAccuracy: true, timeout: 10000 }
     );
   }
+
+  const miniProgress = inAppRoute
+    ? getNavigationProgress(inAppRoute, livePosition ?? inAppRoute.origin)
+    : null;
 
   return (
     <div className="bg-[#F4F7FB] min-h-screen">
@@ -622,23 +742,54 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
               </div>
             )}
 
-            {inAppRoute && (
+            {inAppRoute && miniProgress && (
               <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-3 space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-slate-900">
-                    {inAppRoute.distanceKm} km · {inAppRoute.durationMinutes} min
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setInAppRoute(null)}
-                    className="text-[11px] font-semibold text-blue-700 hover:underline cursor-pointer"
-                  >
-                    Clear
-                  </button>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold text-slate-900">
+                      {miniProgress.arrived
+                        ? "Arrived!"
+                        : `${miniProgress.remainingDistanceKm} km · ${miniProgress.remainingMinutes} min`}
+                    </span>
+                    {navigationTracking && (
+                      <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">
+                        Live
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {navigationTracking && !followUser && (
+                      <button
+                        type="button"
+                        onClick={() => setFollowUser(true)}
+                        className="text-[11px] font-semibold text-blue-700 hover:underline cursor-pointer"
+                      >
+                        Follow
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInAppRoute(null);
+                        setLivePosition(null);
+                        setWatchFailed(false);
+                      }}
+                      className="text-[11px] font-semibold text-blue-700 hover:underline cursor-pointer"
+                    >
+                      {navigationTracking ? "Stop" : "Clear"}
+                    </button>
+                  </div>
                 </div>
                 <ol className="max-h-32 overflow-y-auto space-y-1 text-[11px] text-slate-700">
                   {inAppRoute.steps.map((s, idx) => (
-                    <li key={`${idx}-${s.instruction}`}>
+                    <li
+                      key={`${idx}-${s.instruction}`}
+                      className={
+                        !miniProgress.arrived && idx === miniProgress.currentStepIndex
+                          ? "font-bold text-blue-900"
+                          : ""
+                      }
+                    >
                       <strong>{idx + 1}.</strong> {s.instruction}
                     </li>
                   ))}

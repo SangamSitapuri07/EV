@@ -23,7 +23,12 @@ import {
   type NearbyChargersResult,
   type OverpassElement,
 } from "@/features/search/nearby-chargers.shared";
-import { computeInAppRoute, type InAppRoute } from "@/lib/in-app-navigation";
+import {
+  computeInAppRoute,
+  getNavigationProgress,
+  type InAppRoute,
+  type LiveGpsSample,
+} from "@/lib/in-app-navigation";
 import { InteractiveCityMap } from "@/components/map/interactive-city-map";
 import { Badge, Button, Card, Select, Skeleton } from "@/components/ui/primitives";
 import { formatPaise, getFacilityPhoto } from "@/lib/utils";
@@ -79,7 +84,23 @@ function ExploreContent() {
   const [sseConnected, setSseConnected] = useState(false);
   const [activeRoute, setActiveRoute] = useState<InAppRoute | null>(null);
   const [navigating, setNavigating] = useState(false);
+  const [livePosition, setLivePosition] = useState<LiveGpsSample | null>(null);
+  const [watchFailed, setWatchFailed] = useState(false);
+  const [followUser, setFollowUser] = useState(true);
+  const [isRerouting, setIsRerouting] = useState(false);
+  const lastRerouteAtRef = useRef<number>(0);
   const nearbyAbortRef = useRef<AbortController | null>(null);
+
+  const activeRouteDestId = activeRoute?.destinationId ?? null;
+  const navigationTracking = Boolean(
+    activeRouteDestId &&
+      !isDefaultLocation &&
+      !watchFailed &&
+      typeof window !== "undefined" &&
+      window.isSecureContext &&
+      typeof navigator !== "undefined" &&
+      navigator.geolocation?.watchPosition
+  );
 
   const fetchNearbyExternalChargers = useCallback(
     async (lat: number, lng: number, km: number) => {
@@ -309,8 +330,10 @@ function ExploreContent() {
   }, []);
 
   // Re-fetch external nearby chargers when radius, connector, or power filters change while location is set
+  // Pause auto-refetch during active live GPS navigation so moving along a road does not spam nearby APIs
   useEffect(() => {
     if (!userLocation) return;
+    if (activeRoute && navigationTracking) return;
     if (!wantEv && wantParking) return;
     const timer = setTimeout(() => {
       void fetchNearbyExternalChargers(
@@ -320,7 +343,15 @@ function ExploreContent() {
       );
     }, 350);
     return () => clearTimeout(timer);
-  }, [userLocation, radiusKm, wantEv, wantParking, fetchNearbyExternalChargers]);
+  }, [
+    userLocation,
+    radiusKm,
+    wantEv,
+    wantParking,
+    activeRoute,
+    navigationTracking,
+    fetchNearbyExternalChargers,
+  ]);
 
   const fetchFacilities = useCallback(async () => {
     setLoading(true);
@@ -439,6 +470,82 @@ function ExploreContent() {
     );
   }
 
+  const activeRouteRef = useRef<InAppRoute | null>(null);
+  useEffect(() => {
+    activeRouteRef.current = activeRoute;
+  }, [activeRoute]);
+
+  // Continuous live GPS tracking (watchPosition) while in-app navigation is active
+  useEffect(() => {
+    if (
+      !activeRouteDestId ||
+      isDefaultLocation ||
+      typeof window === "undefined" ||
+      !window.isSecureContext ||
+      typeof navigator === "undefined" ||
+      !navigator.geolocation?.watchPosition
+    ) {
+      return;
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        setWatchFailed(false);
+        const sample: LiveGpsSample = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          heading: pos.coords.heading ?? null,
+          speedMps: pos.coords.speed ?? null,
+          accuracyMeters: pos.coords.accuracy ?? null,
+          timestamp: pos.timestamp,
+        };
+        setLivePosition(sample);
+        setUserLocation({ lat: sample.lat, lng: sample.lng });
+
+        const currentRoute = activeRouteRef.current;
+        if (!currentRoute) return;
+        const progress = getNavigationProgress(currentRoute, sample);
+        if (
+          progress.offRoute &&
+          !progress.arrived &&
+          Date.now() - lastRerouteAtRef.current > 15_000
+        ) {
+          lastRerouteAtRef.current = Date.now();
+          setIsRerouting(true);
+          void computeInAppRoute({
+            destinationId: currentRoute.destinationId,
+            destinationName: currentRoute.destinationName,
+            originLat: sample.lat,
+            originLng: sample.lng,
+            destLat: currentRoute.destination.lat,
+            destLng: currentRoute.destination.lng,
+          })
+            .then((updated) => {
+              if (activeRouteRef.current?.destinationId === currentRoute.destinationId) {
+                setActiveRoute(updated);
+              }
+            })
+            .finally(() => setIsRerouting(false));
+        }
+      },
+      () => {
+        setWatchFailed(true);
+      },
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [activeRouteDestId, isDefaultLocation]);
+
+  const handleClearRoute = useCallback(() => {
+    setActiveRoute(null);
+    setLivePosition(null);
+    setWatchFailed(false);
+    setIsRerouting(false);
+  }, []);
+
   const handleNavigateToStation = useCallback(
     async (target: { id: string; name: string; latitude: number; longitude: number }) => {
       setSelectedId(target.id);
@@ -451,21 +558,32 @@ function ExploreContent() {
       }
       setNavigating(true);
       try {
+        const origin = livePosition ?? userLocation;
         const route = await computeInAppRoute({
           destinationId: target.id,
           destinationName: target.name,
-          originLat: userLocation.lat,
-          originLng: userLocation.lng,
+          originLat: origin.lat,
+          originLng: origin.lng,
           destLat: target.latitude,
           destLng: target.longitude,
         });
+        setFollowUser(true);
+        setWatchFailed(false);
+        lastRerouteAtRef.current = Date.now();
         setActiveRoute(route);
       } finally {
         setNavigating(false);
       }
     },
-    [userLocation, requestUserLocation]
+    [userLocation, livePosition, requestUserLocation]
   );
+
+  const navigationProgress = activeRoute
+    ? getNavigationProgress(
+        activeRoute,
+        livePosition ?? userLocation ?? activeRoute.origin
+      )
+    : null;
 
   const visibleOsmStations = !wantEv && wantParking ? [] : osmStations;
   const comparedFacilities = facilities.filter((f) => compareIds.includes(f.id));
@@ -687,6 +805,10 @@ function ExploreContent() {
               selectedId={selectedId}
               onSelectFacility={setSelectedId}
               userLocation={userLocation}
+              livePosition={livePosition}
+              navigationTracking={navigationTracking}
+              followUser={followUser}
+              onToggleFollowUser={setFollowUser}
               isDefaultLocation={isDefaultLocation}
               radiusKm={Number(radiusKm) || 25}
               locationStatus={locationStatus}
@@ -698,11 +820,11 @@ function ExploreContent() {
               activeRoute={activeRoute}
               navigating={navigating}
               onNavigateToStation={handleNavigateToStation}
-              onClearRoute={() => setActiveRoute(null)}
+              onClearRoute={handleClearRoute}
             />
 
             {/* In-App Turn-by-Turn Navigation Panel */}
-            {activeRoute && (
+            {activeRoute && navigationProgress && (
               <Card className="p-4 bg-white border-blue-200 shadow-sm space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
@@ -710,47 +832,110 @@ function ExploreContent() {
                       <Navigation className="h-4 w-4" />
                     </span>
                     <div>
-                      <h2 className="text-sm font-extrabold text-slate-900">
-                        In-App Route to {activeRoute.destinationName}
-                      </h2>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-sm font-extrabold text-slate-900">
+                          In-App Route to {activeRoute.destinationName}
+                        </h2>
+                        {navigationTracking && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                            Live GPS Tracking
+                          </span>
+                        )}
+                        {isRerouting && (
+                          <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                            Recalculating route...
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-600">
-                        <strong>{activeRoute.distanceKm} km</strong> · Est.{" "}
-                        <strong>{activeRoute.durationMinutes} min</strong> drive{" "}
-                        {activeRoute.source === "DIRECT_FALLBACK"
-                          ? "(direct corridor line — road router unavailable)"
-                          : "(via live road routing)"}
+                        {navigationProgress.arrived ? (
+                          <strong className="text-emerald-700">
+                            Arrived within 50 m of {activeRoute.destinationName}
+                          </strong>
+                        ) : (
+                          <>
+                            <strong>{navigationProgress.remainingDistanceKm} km</strong> remaining ·
+                            Est. <strong>{navigationProgress.remainingMinutes} min</strong>{" "}
+                            {activeRoute.source === "DIRECT_FALLBACK"
+                              ? "(direct corridor line — road router unavailable)"
+                              : "(via live road routing)"}
+                          </>
+                        )}
                       </p>
                     </div>
                   </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setActiveRoute(null)}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                    Clear Route
-                  </Button>
-                </div>
-                <ol className="max-h-44 overflow-y-auto divide-y divide-slate-100 rounded-xl border border-slate-100 bg-slate-50/70 text-xs">
-                  {activeRoute.steps.map((step, idx) => (
-                    <li
-                      key={`${idx}-${step.instruction}`}
-                      className="flex items-center justify-between gap-3 px-3 py-2 text-slate-700"
+                  <div className="flex items-center gap-2">
+                    {navigationTracking && !followUser && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setFollowUser(true)}
+                      >
+                        <LocateFixed className="h-3.5 w-3.5 text-blue-600" />
+                        Follow Me
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={handleClearRoute}
                     >
+                      <X className="h-3.5 w-3.5" />
+                      {navigationTracking ? "Stop Navigation" : "Clear Route"}
+                    </Button>
+                  </div>
+                </div>
+                {!navigationProgress.arrived &&
+                  activeRoute.steps[navigationProgress.currentStepIndex] && (
+                    <div className="rounded-xl border border-blue-200 bg-blue-50/70 px-3 py-2 text-xs text-blue-950 flex items-center justify-between gap-2">
                       <span>
-                        <strong className="text-slate-900 mr-1.5">{idx + 1}.</strong>
-                        {step.instruction}
+                        <strong className="text-blue-700 mr-1.5">Next:</strong>
+                        {activeRoute.steps[navigationProgress.currentStepIndex]!.instruction}
                       </span>
-                      {step.distanceMeters > 0 && (
-                        <span className="shrink-0 font-mono text-[11px] text-slate-500">
-                          {step.distanceMeters >= 1000
-                            ? `${(step.distanceMeters / 1000).toFixed(1)} km`
-                            : `${step.distanceMeters} m`}
+                      {activeRoute.steps[navigationProgress.currentStepIndex]!.distanceMeters >
+                        0 && (
+                        <span className="shrink-0 font-mono text-[11px] text-blue-800">
+                          {activeRoute.steps[navigationProgress.currentStepIndex]!.distanceMeters >=
+                          1000
+                            ? `${(
+                                activeRoute.steps[navigationProgress.currentStepIndex]!
+                                  .distanceMeters / 1000
+                              ).toFixed(1)} km`
+                            : `${activeRoute.steps[navigationProgress.currentStepIndex]!.distanceMeters} m`}
                         </span>
                       )}
-                    </li>
-                  ))}
+                    </div>
+                  )}
+                <ol className="max-h-44 overflow-y-auto divide-y divide-slate-100 rounded-xl border border-slate-100 bg-slate-50/70 text-xs">
+                  {activeRoute.steps.map((step, idx) => {
+                    const isCurrent =
+                      !navigationProgress.arrived && idx === navigationProgress.currentStepIndex;
+                    return (
+                      <li
+                        key={`${idx}-${step.instruction}`}
+                        className={`flex items-center justify-between gap-3 px-3 py-2 ${
+                          isCurrent
+                            ? "bg-blue-50 text-blue-950 font-semibold"
+                            : "text-slate-700"
+                        }`}
+                      >
+                        <span>
+                          <strong className="text-slate-900 mr-1.5">{idx + 1}.</strong>
+                          {step.instruction}
+                        </span>
+                        {step.distanceMeters > 0 && (
+                          <span className="shrink-0 font-mono text-[11px] text-slate-500">
+                            {step.distanceMeters >= 1000
+                              ? `${(step.distanceMeters / 1000).toFixed(1)} km`
+                              : `${step.distanceMeters} m`}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ol>
               </Card>
             )}
