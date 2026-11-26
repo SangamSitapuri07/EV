@@ -13,27 +13,24 @@ import {
   ExternalLink,
   Search,
   X,
+  ShieldCheck,
+  Clock,
 } from "lucide-react";
 import type { FacilitySearchResultItem } from "@/features/search/search.service";
+import type { ExternalEvChargerStation } from "@/features/search/nearby-chargers.service";
 import { formatPaise, getFacilityPhoto } from "@/lib/utils";
 import { Button } from "@/components/ui/primitives";
 
-export interface NearbyOsmStation {
-  id: string;
-  name: string;
-  operator?: string;
-  latitude: number;
-  longitude: number;
-  distanceKm: number;
-  sockets?: string;
-}
+export type NearbyOsmStation = ExternalEvChargerStation;
 
 interface MapProps {
   facilities: FacilitySearchResultItem[];
-  osmStations?: NearbyOsmStation[];
+  osmStations?: ExternalEvChargerStation[];
   selectedId: string | null;
   onSelectFacility: (id: string) => void;
   userLocation: { lat: number; lng: number } | null;
+  isDefaultLocation?: boolean;
+  radiusKm?: number;
   locationStatus?: "idle" | "prompting" | "granted" | "denied";
   locationError?: string | null;
   onSearchBounds: (bounds: {
@@ -44,6 +41,7 @@ interface MapProps {
   }) => void;
   onLocateUser: () => void;
   onResolveCityQuery?: (query: string) => Promise<void>;
+  onUseDefaultLocation?: () => void;
 }
 
 export function InteractiveCityMap({
@@ -52,11 +50,14 @@ export function InteractiveCityMap({
   selectedId,
   onSelectFacility,
   userLocation,
+  isDefaultLocation = false,
+  radiusKm = 25,
   locationStatus = "idle",
   locationError,
   onSearchBounds,
   onLocateUser,
   onResolveCityQuery,
+  onUseDefaultLocation,
 }: MapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
@@ -81,9 +82,9 @@ export function InteractiveCityMap({
     void import("leaflet").then((L) => {
       if (cancelled || !el || mapRef.current) return;
 
-      const centerLat = userLocation?.lat ?? facilities[0]?.latitude ?? 22.9734;
-      const centerLng = userLocation?.lng ?? facilities[0]?.longitude ?? 78.6569;
-      const initialZoom = userLocation || facilities[0] ? 13 : 5;
+      const centerLat = userLocation?.lat ?? facilities[0]?.latitude ?? 20.5937;
+      const centerLng = userLocation?.lng ?? facilities[0]?.longitude ?? 78.9629;
+      const initialZoom = userLocation ? (radiusKm >= 25 ? 11 : 13) : facilities[0] ? 13 : 5;
 
       const map = L.map(el, {
         center: [centerLat, centerLng],
@@ -114,13 +115,14 @@ export function InteractiveCityMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-center map when user location updates or when facilities arrive without userLocation
+  // Re-center map when user location, radius, or facilities update
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     if (userLocation) {
-      map.setView([userLocation.lat, userLocation.lng], 13, { animate: true });
+      const targetZoom = radiusKm >= 40 ? 10 : radiusKm >= 18 ? 11 : radiusKm >= 8 ? 12 : 13;
+      map.setView([userLocation.lat, userLocation.lng], targetZoom, { animate: true });
       return;
     }
 
@@ -135,9 +137,9 @@ export function InteractiveCityMap({
         }
       });
     }
-  }, [userLocation, facilities]);
+  }, [userLocation, radiusKm, facilities]);
 
-  // Render live pins (user GPS, ParkSmart facilities, OSM EV chargers, optional heatmap)
+  // Render live pins (user GPS, ParkSmart facilities, OSM/OCM EV chargers, optional heatmap)
   useEffect(() => {
     const map = mapRef.current;
     const group = layerGroupRef.current;
@@ -148,14 +150,14 @@ export function InteractiveCityMap({
       if (cancelled || !group) return;
       group.clearLayers();
 
-      // User GPS dot + 5 km radius ring
+      // User location dot + active search radius circle (matches Distance slider)
       if (userLocation) {
         L.circle([userLocation.lat, userLocation.lng], {
-          radius: 5000,
+          radius: Math.max(500, radiusKm * 1000),
           color: "#2563EB",
           fillColor: "#3B82F6",
           fillOpacity: 0.06,
-          weight: 1,
+          weight: 1.5,
         }).addTo(group);
 
         const userIcon = L.divIcon({
@@ -165,7 +167,9 @@ export function InteractiveCityMap({
           iconAnchor: [9, 9],
         });
         L.marker([userLocation.lat, userLocation.lng], { icon: userIcon })
-          .bindTooltip("Your Current Location")
+          .bindTooltip(
+            isDefaultLocation ? "Default Center (Not GPS)" : "Your Search Location"
+          )
           .addTo(group);
       }
 
@@ -186,11 +190,13 @@ export function InteractiveCityMap({
 
         const isSelected = f.id === selectedId;
         const bg =
-          f.availableSpaces === 0
-            ? "#DC2626"
-            : f.hasEvCharging
-              ? "#2563EB"
-              : "#059669";
+          f.availabilityStatus === "UNKNOWN"
+            ? "#475569"
+            : f.availableSpaces === 0
+              ? "#DC2626"
+              : f.hasEvCharging
+                ? "#2563EB"
+                : "#059669";
         const label = f.hasEvCharging ? "⚡" : "P";
         const ring = isSelected ? "0 0 0 5px rgba(37,99,235,0.35)" : "0 2px 6px rgba(0,0,0,0.3)";
 
@@ -206,7 +212,7 @@ export function InteractiveCityMap({
         marker.addTo(group);
       }
 
-      // Real OpenStreetMap Overpass EV charging points
+      // External OpenStreetMap / Open Charge Map EV charging points
       for (const s of osmStations) {
         const isSelected = s.id === selectedId;
         const icon = L.divIcon({
@@ -224,7 +230,16 @@ export function InteractiveCityMap({
     return () => {
       cancelled = true;
     };
-  }, [facilities, osmStations, selectedId, userLocation, showHeatmap, onSelectFacility]);
+  }, [
+    facilities,
+    osmStations,
+    selectedId,
+    userLocation,
+    isDefaultLocation,
+    radiusKm,
+    showHeatmap,
+    onSelectFacility,
+  ]);
 
   function handleSearchCurrentArea() {
     const map = mapRef.current;
@@ -330,7 +345,10 @@ export function InteractiveCityMap({
           </Button>
 
           {onResolveCityQuery && (
-            <form onSubmit={handleCitySubmit} className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
+            <form
+              onSubmit={handleCitySubmit}
+              className="flex items-center gap-1.5 pt-1 border-t border-slate-100"
+            >
               <input
                 type="text"
                 value={cityQuery}
@@ -343,18 +361,30 @@ export function InteractiveCityMap({
               </Button>
             </form>
           )}
+
+          {onUseDefaultLocation && (
+            <button
+              type="button"
+              onClick={onUseDefaultLocation}
+              className="w-full text-center text-[11px] font-semibold text-slate-500 hover:text-slate-800 underline cursor-pointer"
+            >
+              Use Default Location (New Delhi)
+            </button>
+          )}
         </div>
       )}
 
       {/* Selected Pin Floating Callout Card */}
       {(selectedFacility || selectedOsm) && (
-        <div className="absolute left-3 bottom-12 sm:left-4 sm:bottom-4 z-[400] w-72 rounded-2xl border border-slate-200 bg-white/95 backdrop-blur p-3 shadow-lg">
+        <div className="absolute left-3 bottom-12 sm:left-4 sm:bottom-4 z-[400] w-80 rounded-2xl border border-slate-200 bg-white/95 backdrop-blur p-3 shadow-lg">
           {selectedOsm ? (
             <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-2">
                 <span className="inline-flex items-center gap-1 rounded bg-teal-50 px-2 py-0.5 text-[10px] font-bold text-teal-800">
                   <Zap className="h-3 w-3" />
-                  Live OSM EV Charger
+                  {selectedOsm.source === "OPEN_CHARGE_MAP"
+                    ? "Open Charge Map"
+                    : "OpenStreetMap"}
                 </span>
                 <span className="text-[11px] font-semibold text-slate-500">
                   {selectedOsm.distanceKm} km away
@@ -369,14 +399,20 @@ export function InteractiveCityMap({
               {selectedOsm.sockets && (
                 <div className="text-[11px] text-slate-600">{selectedOsm.sockets}</div>
               )}
-              <a
-                href={`https://www.google.com/maps/dir/?api=1&destination=${selectedOsm.latitude},${selectedOsm.longitude}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 hover:underline pt-1"
-              >
-                Navigate to EV Station <ExternalLink className="h-3 w-3" />
-              </a>
+              <div className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+                <Clock className="h-3 w-3" />
+                Availability unknown (external map listing)
+              </div>
+              <div>
+                <a
+                  href={`https://www.google.com/maps/dir/?api=1&destination=${selectedOsm.latitude},${selectedOsm.longitude}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 hover:underline pt-1"
+                >
+                  Navigate to EV Station <ExternalLink className="h-3 w-3" />
+                </a>
+              </div>
             </div>
           ) : (
             selectedFacility && (
@@ -386,7 +422,7 @@ export function InteractiveCityMap({
                   alt={selectedFacility.name}
                   className="h-14 w-16 rounded-xl object-cover shrink-0"
                 />
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1 space-y-0.5">
                   <div className="truncate text-xs font-bold text-slate-900">
                     {selectedFacility.name}
                   </div>
@@ -405,13 +441,29 @@ export function InteractiveCityMap({
                       ? `${selectedFacility.distanceKm} km`
                       : selectedFacility.city}
                   </div>
-                  <div className="mt-1 flex items-center justify-between">
-                    <span className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">
-                      {selectedFacility.availableSpaces}/{selectedFacility.totalCapacity} Available
+                  <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                    <span
+                      className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
+                        selectedFacility.availabilityStatus === "LIVE"
+                          ? "bg-emerald-50 text-emerald-700"
+                          : selectedFacility.availabilityStatus === "STALE"
+                            ? "bg-amber-50 text-amber-700"
+                            : "bg-slate-100 text-slate-700"
+                      }`}
+                    >
+                      {selectedFacility.availabilityStatus === "UNKNOWN"
+                        ? "Availability unknown"
+                        : `${selectedFacility.availableSpaces}/${selectedFacility.totalCapacity} (${selectedFacility.availabilityStatus})`}
                     </span>
+                    {selectedFacility.ownerVerified && (
+                      <span className="inline-flex items-center gap-0.5 rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">
+                        <ShieldCheck className="h-2.5 w-2.5" />
+                        Owner Verified
+                      </span>
+                    )}
                     <Link
                       href={`/facilities/${selectedFacility.slug}`}
-                      className="text-[11px] font-bold text-blue-700 hover:underline"
+                      className="ml-auto text-[11px] font-bold text-blue-700 hover:underline"
                     >
                       Book →
                     </Link>

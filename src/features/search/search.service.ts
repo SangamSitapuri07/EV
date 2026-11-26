@@ -2,8 +2,11 @@ import { z } from "zod";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { ensureDatabaseReady } from "@/db";
 import {
+  chargingStations,
   connectors,
+  evOwnerVerifications,
   facilities,
+  operators,
   parkingSpaces,
   pricingRules,
   reviews,
@@ -11,32 +14,55 @@ import {
 import { estimateTravelMinutes, haversineKm } from "@/lib/utils";
 import { expireStaleHolds } from "@/features/availability/availability.service";
 
-export const facilitySearchQuerySchema = z.object({
-  q: z.string().trim().max(120).optional(),
-  lat: z.coerce.number().min(-90).max(90).optional(),
-  lng: z.coerce.number().min(-180).max(180).optional(),
-  radiusKm: z.coerce.number().min(0.5).max(100).optional().default(25),
-  north: z.coerce.number().min(-90).max(90).optional(),
-  south: z.coerce.number().min(-90).max(90).optional(),
-  east: z.coerce.number().min(-180).max(180).optional(),
-  west: z.coerce.number().min(-180).max(180).optional(),
-  startTime: z.string().datetime().optional(),
-  endTime: z.string().datetime().optional(),
-  maxPricePaise: z.coerce.number().int().positive().optional(),
-  facilityType: z.string().optional(),
-  hasEvCharging: z.enum(["true", "false"]).optional(),
-  connectorStandard: z.string().optional(),
-  minPowerKw: z.coerce.number().min(0).optional(),
-  isCovered: z.enum(["true", "false"]).optional(),
-  hasAccessibility: z.enum(["true", "false"]).optional(),
-  is24Hours: z.enum(["true", "false"]).optional(),
-  dataSourceType: z.enum(["VERIFIED_REAL", "OPERATOR_MANAGED", "SIMULATED"]).optional(),
-  sortBy: z.enum(["suitability", "distance", "price"]).optional().default("suitability"),
-  page: z.coerce.number().int().min(1).optional().default(1),
-  pageSize: z.coerce.number().int().min(1).max(50).optional().default(20),
+export const facilitySearchQuerySchema = z
+  .object({
+    q: z.string().trim().max(120).optional(),
+    lat: z.coerce.number().finite().min(-90).max(90).optional(),
+    lng: z.coerce.number().finite().min(-180).max(180).optional(),
+    radiusKm: z.coerce.number().finite().min(0.5).max(100).optional().default(25),
+    north: z.coerce.number().finite().min(-90).max(90).optional(),
+    south: z.coerce.number().finite().min(-90).max(90).optional(),
+    east: z.coerce.number().finite().min(-180).max(180).optional(),
+    west: z.coerce.number().finite().min(-180).max(180).optional(),
+    startTime: z.string().datetime().optional(),
+    endTime: z.string().datetime().optional(),
+    maxPricePaise: z.coerce.number().int().positive().optional(),
+    facilityType: z.string().optional(),
+    hasParking: z.enum(["true", "false"]).optional(),
+    hasEvCharging: z.enum(["true", "false"]).optional(),
+    connectorStandard: z.string().optional(),
+    minPowerKw: z.coerce.number().finite().min(0).optional(),
+    isCovered: z.enum(["true", "false"]).optional(),
+    hasAccessibility: z.enum(["true", "false"]).optional(),
+    is24Hours: z.enum(["true", "false"]).optional(),
+    dataSourceType: z.enum(["VERIFIED_REAL", "OPERATOR_MANAGED", "SIMULATED"]).optional(),
+    sortBy: z.enum(["suitability", "distance", "price"]).optional().default("suitability"),
+    page: z.coerce.number().int().min(1).optional().default(1),
+    pageSize: z.coerce.number().int().min(1).max(50).optional().default(20),
+  })
+  .refine((d) => (d.lat === undefined) === (d.lng === undefined), {
+    message: "Both lat and lng must be provided together",
+    path: ["lat"],
+  })
+  .refine(
+    (d) => !(d.north !== undefined && d.south !== undefined && d.north < d.south),
+    {
+      message: "north bound must be greater than or equal to south bound",
+      path: ["north"],
+    }
+  );
+
+export const nearbyChargersQuerySchema = z.object({
+  lat: z.coerce.number().finite().min(-90).max(90),
+  lng: z.coerce.number().finite().min(-180).max(180),
+  radiusKm: z.coerce.number().finite().min(0.5).max(100).optional().default(25),
+  connectorStandard: z.string().trim().max(40).optional(),
+  minPowerKw: z.coerce.number().finite().min(0).optional(),
 });
 
 export type FacilitySearchQuery = z.infer<typeof facilitySearchQuerySchema>;
+
+export type AvailabilityStatus = "LIVE" | "STALE" | "UNKNOWN";
 
 export interface FacilitySearchResultItem {
   id: string;
@@ -45,6 +71,10 @@ export interface FacilitySearchResultItem {
   description: string;
   facilityType: string;
   dataSourceType: string;
+  ownerVerified: boolean;
+  stationDocsVerified: boolean;
+  liveAvailabilityConnected: boolean;
+  availabilityStatus: AvailabilityStatus;
   addressLine1: string;
   landmark: string | null;
   city: string;
@@ -103,19 +133,30 @@ export async function searchFacilities(rawQuery: FacilitySearchQuery) {
   }
 
   const facilityIds = activeFacilities.map((f) => f.id);
+  const operatorIds = Array.from(new Set(activeFacilities.map((f) => f.operatorId)));
 
-  const [allSpaces, allConnectors, allRules, allReviews] = await Promise.all([
-    db
-      .select()
-      .from(parkingSpaces)
-      .where(and(inArray(parkingSpaces.facilityId, facilityIds), eq(parkingSpaces.isActive, true))),
-    db.select().from(connectors).where(inArray(connectors.facilityId, facilityIds)),
-    db
-      .select()
-      .from(pricingRules)
-      .where(and(inArray(pricingRules.facilityId, facilityIds), eq(pricingRules.isActive, true))),
-    db.select().from(reviews).where(inArray(reviews.facilityId, facilityIds)),
-  ]);
+  const [allSpaces, allConnectors, allRules, allReviews, allOperators, allVerifications, allStations] =
+    await Promise.all([
+      db
+        .select()
+        .from(parkingSpaces)
+        .where(and(inArray(parkingSpaces.facilityId, facilityIds), eq(parkingSpaces.isActive, true))),
+      db.select().from(connectors).where(inArray(connectors.facilityId, facilityIds)),
+      db
+        .select()
+        .from(pricingRules)
+        .where(and(inArray(pricingRules.facilityId, facilityIds), eq(pricingRules.isActive, true))),
+      db.select().from(reviews).where(inArray(reviews.facilityId, facilityIds)),
+      db.select().from(operators).where(inArray(operators.id, operatorIds)),
+      db
+        .select()
+        .from(evOwnerVerifications)
+        .where(inArray(evOwnerVerifications.operatorId, operatorIds)),
+      db
+        .select()
+        .from(chargingStations)
+        .where(inArray(chargingStations.facilityId, facilityIds)),
+    ]);
 
   const now = Date.now();
   const qLower = rawQuery.q?.toLowerCase().trim() ?? "";
@@ -123,6 +164,18 @@ export async function searchFacilities(rawQuery: FacilitySearchQuery) {
   const enriched: FacilitySearchResultItem[] = [];
 
   for (const f of activeFacilities) {
+    // Ensure valid geographic coordinates
+    if (
+      !Number.isFinite(f.latitude) ||
+      !Number.isFinite(f.longitude) ||
+      f.latitude < -90 ||
+      f.latitude > 90 ||
+      f.longitude < -180 ||
+      f.longitude > 180
+    ) {
+      continue;
+    }
+
     // Text search filter
     if (qLower) {
       const hay = `${f.name} ${f.addressLine1} ${f.landmark ?? ""} ${f.city} ${f.description}`.toLowerCase();
@@ -164,8 +217,24 @@ export async function searchFacilities(rawQuery: FacilitySearchQuery) {
     if (rawQuery.dataSourceType && f.dataSourceType !== rawQuery.dataSourceType) continue;
 
     const fSpaces = allSpaces.filter((s) => s.facilityId === f.id);
+    if (rawQuery.hasParking === "true" && fSpaces.length === 0) continue;
+    if (rawQuery.hasParking === "false" && !f.hasEvCharging) continue;
+
     const availableSpaces = fSpaces.filter((s) => s.status === "AVAILABLE").length;
     const occupiedSpaces = fSpaces.filter((s) => s.status !== "AVAILABLE").length;
+
+    const fOperator = allOperators.find((o) => o.id === f.operatorId);
+    const fVerification = allVerifications.find((v) => v.operatorId === f.operatorId);
+    const fStations = allStations.filter((st) => st.facilityId === f.id);
+
+    const ownerVerified = fOperator?.status === "APPROVED";
+    const stationDocsVerified = fVerification?.verificationStatus === "APPROVED";
+    const hasRealTelemetryStation =
+      fStations.length > 0 && fStations.some((st) => !st.isSimulated);
+    const liveAvailabilityConnected =
+      f.dataSourceType === "VERIFIED_REAL" ||
+      (f.dataSourceType === "OPERATOR_MANAGED" &&
+        (!f.hasEvCharging || hasRealTelemetryStation));
 
     const fConnectors = allConnectors.filter((c) => c.facilityId === f.id);
     const availableConnectors = fConnectors.filter((c) => c.status === "AVAILABLE").length;
@@ -210,6 +279,11 @@ export async function searchFacilities(rawQuery: FacilitySearchQuery) {
 
     const updatedMs = new Date(f.availabilityUpdatedAt).getTime();
     const isStale = now - updatedMs > 15 * 60 * 1000;
+    const availabilityStatus: AvailabilityStatus = !liveAvailabilityConnected
+      ? "UNKNOWN"
+      : isStale
+        ? "STALE"
+        : "LIVE";
 
     enriched.push({
       id: f.id,
@@ -218,6 +292,10 @@ export async function searchFacilities(rawQuery: FacilitySearchQuery) {
       description: f.description,
       facilityType: f.facilityType,
       dataSourceType: f.dataSourceType,
+      ownerVerified,
+      stationDocsVerified,
+      liveAvailabilityConnected,
+      availabilityStatus,
       addressLine1: f.addressLine1,
       landmark: f.landmark,
       city: f.city,

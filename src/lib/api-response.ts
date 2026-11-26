@@ -41,7 +41,20 @@ export function handleApiError(err: unknown) {
     return apiError(err.status, err.code, err.message, err.details);
   }
   if (err instanceof ZodError) {
-    return apiError(400, "VALIDATION_ERROR", "Invalid request payload", err.flatten());
+    const flat = err.flatten();
+    const firstFieldEntry = Object.entries(flat.fieldErrors).find(
+      ([, msgs]) => Array.isArray(msgs) && msgs.length > 0
+    );
+    const devSuffix =
+      process.env.NODE_ENV !== "production" && firstFieldEntry
+        ? `: ${firstFieldEntry[0]} — ${firstFieldEntry[1]?.[0]}`
+        : "";
+    return apiError(
+      400,
+      "VALIDATION_ERROR",
+      `Invalid request payload${devSuffix}`,
+      flat
+    );
   }
   console.error("[API_ERROR]", err);
   return apiError(500, "INTERNAL_ERROR", "An unexpected server error occurred");

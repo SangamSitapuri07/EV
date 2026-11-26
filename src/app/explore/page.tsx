@@ -12,22 +12,36 @@ import {
   X,
   LocateFixed,
   ExternalLink,
+  ShieldCheck,
+  Clock,
 } from "lucide-react";
 import type { FacilitySearchResultItem } from "@/features/search/search.service";
-import {
-  InteractiveCityMap,
-  type NearbyOsmStation,
-} from "@/components/map/interactive-city-map";
+import type {
+  ExternalEvChargerStation,
+  NearbyChargersResult,
+} from "@/features/search/nearby-chargers.service";
+import { InteractiveCityMap } from "@/components/map/interactive-city-map";
 import { Badge, Button, Card, Select, Skeleton } from "@/components/ui/primitives";
-import { formatPaise, getFacilityPhoto, haversineKm } from "@/lib/utils";
+import { formatPaise, getFacilityPhoto } from "@/lib/utils";
+
+const DEFAULT_FALLBACK_LOCATION = {
+  lat: 28.6139,
+  lng: 77.209,
+  label: "Default Center: New Delhi (not your GPS)",
+};
 
 function ExploreContent() {
   const searchParams = useSearchParams();
+  const initialEvParam = searchParams.get("hasEvCharging");
+
   const [q, setQ] = useState(searchParams.get("q") ?? "");
-  const [hasEvCharging, setHasEvCharging] = useState(searchParams.get("hasEvCharging") ?? "");
+  const [wantParking, setWantParking] = useState(initialEvParam !== "true");
+  const [wantEv, setWantEv] = useState(
+    initialEvParam === "true" || initialEvParam === null || initialEvParam === ""
+  );
   const [connectorStandard, setConnectorStandard] = useState("");
   const [minPowerKw, setMinPowerKw] = useState(searchParams.get("minPowerKw") ?? "");
-  const [maxPriceInr, setMaxPriceInr] = useState("200");
+  const [maxPriceInr, setMaxPriceInr] = useState("500");
   const [radiusKm, setRadiusKm] = useState("25");
   const [isCovered, setIsCovered] = useState(searchParams.get("isCovered") ?? "");
   const [hasAccessibility, setHasAccessibility] = useState(
@@ -39,7 +53,9 @@ function ExploreContent() {
     east: number;
     west: number;
   } | null>(null);
+
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [isDefaultLocation, setIsDefaultLocation] = useState(false);
   const [locationLabel, setLocationLabel] = useState<string | null>(null);
   const [locationStatus, setLocationStatus] = useState<
     "idle" | "prompting" | "granted" | "denied"
@@ -47,7 +63,8 @@ function ExploreContent() {
   const [locationError, setLocationError] = useState<string | null>(null);
 
   const [facilities, setFacilities] = useState<FacilitySearchResultItem[]>([]);
-  const [osmStations, setOsmStations] = useState<NearbyOsmStation[]>([]);
+  const [osmStations, setOsmStations] = useState<ExternalEvChargerStation[]>([]);
+  const [externalNotice, setExternalNotice] = useState<string | null>(null);
   const [loadingOsm, setLoadingOsm] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
@@ -55,82 +72,48 @@ function ExploreContent() {
   const [error, setError] = useState<string | null>(null);
   const [sseConnected, setSseConnected] = useState(false);
 
-  const fetchNearbyOsmChargers = useCallback(
+  const fetchNearbyExternalChargers = useCallback(
     async (lat: number, lng: number, km: number) => {
       setLoadingOsm(true);
+      setExternalNotice(null);
       try {
-        const radiusMeters = Math.min(25000, Math.max(3000, Math.round(km * 1000)));
-        const overpassQuery = `[out:json][timeout:10];(node["amenity"="charging_station"](around:${radiusMeters},${lat},${lng});way["amenity"="charging_station"](around:${radiusMeters},${lat},${lng}););out center 25;`;
-        const endpoints = [
-          "https://overpass-api.de/api/interpreter",
-          "https://overpass.kumi.systems/api/interpreter",
-        ];
+        const params = new URLSearchParams({
+          lat: String(lat),
+          lng: String(lng),
+          radiusKm: String(Math.min(100, Math.max(0.5, km))),
+        });
+        if (connectorStandard) params.set("connectorStandard", connectorStandard);
+        if (minPowerKw) params.set("minPowerKw", minPowerKw);
 
-        let json: {
-          elements?: Array<{
-            id: number;
-            lat?: number;
-            lon?: number;
-            center?: { lat: number; lon: number };
-            tags?: Record<string, string>;
-          }>;
-        } | null = null;
-
-        for (const endpoint of endpoints) {
-          try {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 8000);
-            const res = await fetch(endpoint, {
-              method: "POST",
-              body: overpassQuery,
-              signal: controller.signal,
-            });
-            clearTimeout(timer);
-            if (res.ok) {
-              json = await res.json();
-              break;
-            }
-          } catch {
-            // Try next mirror
-          }
+        const res = await fetch(`/api/v1/ev-chargers/nearby?${params.toString()}`);
+        const json = (await res.json()) as {
+          ok: boolean;
+          data?: NearbyChargersResult;
+          error?: { message?: string };
+        };
+        if (!res.ok || !json.ok || !json.data) {
+          setOsmStations([]);
+          setExternalNotice(
+            json.error?.message || "Could not load external nearby EV charging stations."
+          );
+          return;
         }
-
-        if (!json) return;
-
-        const items: NearbyOsmStation[] = (json.elements ?? [])
-          .map((el) => {
-            const pLat = el.lat ?? el.center?.lat;
-            const pLng = el.lon ?? el.center?.lon;
-            if (pLat === undefined || pLng === undefined) return null;
-            const tags = el.tags ?? {};
-            const socketList = Object.entries(tags)
-              .filter(([k]) => k.startsWith("socket:"))
-              .map(([k, v]) => `${k.replace("socket:", "").toUpperCase()} (${v})`)
-              .join(", ");
-            return {
-              id: `osm-${el.id}`,
-              name: tags.name || tags.operator || "Public EV Charging Station",
-              operator: tags.operator,
-              latitude: pLat,
-              longitude: pLng,
-              distanceKm: haversineKm(lat, lng, pLat, pLng),
-              sockets:
-                socketList || tags.capacity
-                  ? `Sockets: ${socketList || tags.capacity}`
-                  : undefined,
-            };
-          })
-          .filter((x): x is NonNullable<typeof x> => x !== null)
-          .sort((a, b) => a.distanceKm - b.distanceKm)
-          .slice(0, 15);
-        setOsmStations(items);
+        setOsmStations(json.data.stations);
+        const osmSource = json.data.sources.openStreetMapOverpass;
+        if (osmSource.status === "UNAVAILABLE") {
+          setExternalNotice(
+            osmSource.message ||
+              "External OpenStreetMap Overpass station feed is temporarily unavailable."
+          );
+        }
       } catch {
-        // Gracefully ignore Overpass offline/timeout in restricted networks
+        setOsmStations([]);
+        setExternalNotice("Network error while fetching nearby EV charging points.");
       } finally {
         setLoadingOsm(false);
       }
     },
-    []
+    [connectorStandard, minPowerKw]
   );
 
   const resolveCityQuery = useCallback(
@@ -153,22 +136,23 @@ function ExploreContent() {
         }
         const coords = { lat: Number(rows[0]!.lat), lng: Number(rows[0]!.lon) };
         setUserLocation(coords);
+        setIsDefaultLocation(false);
         setLocationLabel(rows[0]!.display_name.split(",").slice(0, 2).join(", "));
         setLocationStatus("granted");
         setBounds(null);
-        await fetchNearbyOsmChargers(coords.lat, coords.lng, Number(radiusKm) || 15);
+        await fetchNearbyExternalChargers(coords.lat, coords.lng, Number(radiusKm) || 25);
       } catch {
         setLocationError("Could not look up that location right now.");
       }
     },
-    [fetchNearbyOsmChargers, radiusKm]
+    [fetchNearbyExternalChargers, radiusKm]
   );
 
   const requestUserLocation = useCallback(() => {
     if (typeof window !== "undefined" && !window.isSecureContext) {
       setLocationStatus("denied");
       setLocationError(
-        "Browser GPS requires https:// or http://localhost. Enter your city/area below to find nearby EV chargers."
+        "Browser GPS requires https:// or http://localhost. Enter your city/area or select the default center."
       );
       return;
     }
@@ -186,43 +170,86 @@ function ExploreContent() {
           lng: pos.coords.longitude,
         };
         setUserLocation(coords);
+        setIsDefaultLocation(false);
         setLocationLabel(null);
         setLocationStatus("granted");
         setLocationError(null);
-        setError(null);
         setBounds(null);
-        void fetchNearbyOsmChargers(coords.lat, coords.lng, Number(radiusKm) || 15);
+        void fetchNearbyExternalChargers(coords.lat, coords.lng, Number(radiusKm) || 25);
       },
       (geoErr) => {
         setLocationStatus("denied");
         if (geoErr.code === geoErr.PERMISSION_DENIED) {
           setLocationError(
-            "Location permission was blocked or declined. Allow location in browser site settings, or enter your city below."
+            "Location permission was declined. Enter your city below or use the default location."
           );
         } else {
           setLocationError(
-            "Could not detect GPS coordinates. Try again or enter your city/area below."
+            "Could not detect GPS coordinates. Try again or enter your city below."
           );
         }
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
     );
-  }, [fetchNearbyOsmChargers, radiusKm]);
+  }, [fetchNearbyExternalChargers, radiusKm]);
 
-  // Prompt browser geolocation automatically when Explore opens (if browser permission allows)
+  const useDefaultLocation = useCallback(() => {
+    const coords = {
+      lat: DEFAULT_FALLBACK_LOCATION.lat,
+      lng: DEFAULT_FALLBACK_LOCATION.lng,
+    };
+    setUserLocation(coords);
+    setIsDefaultLocation(true);
+    setLocationLabel(DEFAULT_FALLBACK_LOCATION.label);
+    setLocationStatus("granted");
+    setLocationError(null);
+    setBounds(null);
+    void fetchNearbyExternalChargers(coords.lat, coords.lng, Number(radiusKm) || 25);
+  }, [fetchNearbyExternalChargers, radiusKm]);
+
+  // Only auto-fetch browser GPS on mount when permission is ALREADY granted (never silently probe otherwise)
   useEffect(() => {
     if (typeof window === "undefined" || navigator.userAgent.includes("jsdom")) return;
-    const timer = setTimeout(() => {
-      if (q.trim()) {
+    if (q.trim()) {
+      const timer = setTimeout(() => {
         void resolveCityQuery(q.trim());
-      } else {
-        requestUserLocation();
-      }
-    }, 150);
-    return () => clearTimeout(timer);
-    // Only run once on mount
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+
+    let cancelled = false;
+    if (navigator.permissions?.query) {
+      void navigator.permissions
+        .query({ name: "geolocation" })
+        .then((perm) => {
+          if (!cancelled && perm.state === "granted") {
+            requestUserLocation();
+          }
+        })
+        .catch(() => {
+          // Permissions API unavailable; wait for explicit user button click
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+    // Run once on mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-fetch external nearby chargers when radius, connector, or power filters change while location is set
+  useEffect(() => {
+    if (!userLocation) return;
+    if (!wantEv && wantParking) return;
+    const timer = setTimeout(() => {
+      void fetchNearbyExternalChargers(
+        userLocation.lat,
+        userLocation.lng,
+        Number(radiusKm) || 25
+      );
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [userLocation, radiusKm, wantEv, wantParking, fetchNearbyExternalChargers]);
 
   const fetchFacilities = useCallback(async () => {
     setLoading(true);
@@ -230,17 +257,23 @@ function ExploreContent() {
     try {
       const params = new URLSearchParams();
       if (q.trim()) params.set("q", q.trim());
-      if (hasEvCharging) params.set("hasEvCharging", hasEvCharging);
+
+      // Independent Parking vs EV Charging filter flags
+      if (wantEv && !wantParking) {
+        params.set("hasEvCharging", "true");
+      } else if (!wantEv && wantParking) {
+        params.set("hasParking", "true");
+      }
+
       if (connectorStandard) params.set("connectorStandard", connectorStandard);
       if (minPowerKw) params.set("minPowerKw", minPowerKw);
-      if (maxPriceInr && Number(maxPriceInr) < 200) {
+      if (maxPriceInr && Number(maxPriceInr) < 500) {
         params.set("maxPricePaise", String(Number(maxPriceInr) * 100));
       }
       if (isCovered) params.set("isCovered", isCovered);
       if (hasAccessibility) params.set("hasAccessibility", hasAccessibility);
       params.set("sortBy", userLocation ? "distance" : "suitability");
-      // When user shares real location far from seeded hubs, expand radius so they also see closest bookable hubs
-      params.set("radiusKm", userLocation ? "500" : radiusKm);
+      params.set("radiusKm", radiusKm);
 
       if (userLocation) {
         params.set("lat", String(userLocation.lat));
@@ -256,6 +289,7 @@ function ExploreContent() {
       const res = await fetch(`/api/v1/facilities?${params.toString()}`);
       const json = await res.json();
       if (!res.ok || !json.ok) {
+        setFacilities([]);
         setError(json.error?.message || "Failed to load facilities");
         return;
       }
@@ -264,13 +298,15 @@ function ExploreContent() {
         setSelectedId(json.data.items[0].id);
       }
     } catch {
+      setFacilities([]);
       setError("Network error while loading facilities");
     } finally {
       setLoading(false);
     }
   }, [
     q,
-    hasEvCharging,
+    wantParking,
+    wantEv,
     connectorStandard,
     minPowerKw,
     maxPriceInr,
@@ -311,10 +347,11 @@ function ExploreContent() {
 
   function clearAllFilters() {
     setQ("");
-    setHasEvCharging("");
+    setWantParking(true);
+    setWantEv(true);
     setConnectorStandard("");
     setMinPowerKw("");
-    setMaxPriceInr("200");
+    setMaxPriceInr("500");
     setRadiusKm("25");
     setIsCovered("");
     setHasAccessibility("");
@@ -331,7 +368,10 @@ function ExploreContent() {
     );
   }
 
+  const visibleOsmStations = !wantEv && wantParking ? [] : osmStations;
   const comparedFacilities = facilities.filter((f) => compareIds.includes(f.id));
+  const showEmptyResults =
+    !loading && !error && facilities.length === 0 && visibleOsmStations.length === 0;
 
   return (
     <div className="bg-[#F4F7FB] min-h-screen">
@@ -346,19 +386,20 @@ function ExploreContent() {
               {locationStatus === "granted" && userLocation ? (
                 <span>
                   <strong className="text-slate-900">
-                    {locationLabel ? `Location: ${locationLabel}` : "Live GPS Active"}:
+                    {locationLabel ? locationLabel : "Live GPS Active"}:
                   </strong>{" "}
-                  Showing EV charging points near{" "}
+                  Searching within {radiusKm} km of{" "}
                   <span className="font-mono">
                     {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
                   </span>{" "}
-                  ({osmStations.length} live OSM chargers + {facilities.length} ParkSmart hubs)
+                  ({visibleOsmStations.length} public EV chargers + {facilities.length} ParkSmart hubs)
                 </span>
               ) : locationStatus === "prompting" ? (
-                <span>Requesting your GPS location to find nearby EV charging points...</span>
+                <span>Waiting for your browser location permission...</span>
               ) : (
                 <span>
-                  <strong className="text-slate-900">Find Nearby EV Chargers:</strong> Share your current location to plot EV charging points around you on the live map.
+                  <strong className="text-slate-900">Find Nearby EV Chargers:</strong> Allow
+                  location permission or enter a city on the map to search nearby stations.
                 </span>
               )}
             </div>
@@ -366,14 +407,33 @@ function ExploreContent() {
 
           <Button size="sm" variant="primary" onClick={requestUserLocation}>
             <LocateFixed className="h-3.5 w-3.5" />
-            {locationStatus === "granted" ? "Refresh My Location" : "Allow Location & Find Chargers"}
+            {locationStatus === "granted" && !isDefaultLocation
+              ? "Refresh My Location"
+              : "Allow Location & Find Chargers"}
           </Button>
         </Card>
 
+        {locationError && (
+          <div className="flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+            <LocateFixed className="h-4 w-4 shrink-0" />
+            <span>{locationError}</span>
+          </div>
+        )}
+
         {error && (
+          <div
+            role="alert"
+            className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-900"
+          >
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {externalNotice && (
           <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
             <AlertCircle className="h-4 w-4 shrink-0" />
-            {error}
+            <span>{externalNotice}</span>
           </div>
         )}
 
@@ -394,12 +454,12 @@ function ExploreContent() {
             <div className="space-y-2 border-t border-slate-100 pt-4">
               <div className="text-xs font-bold text-slate-800">Price Range</div>
               <div className="text-xs font-semibold text-slate-600">
-                ₹0 – {Number(maxPriceInr) >= 200 ? "₹500" : `₹${maxPriceInr}/hr`}
+                ₹0 – {Number(maxPriceInr) >= 500 ? "₹500+" : `₹${maxPriceInr}/hr`}
               </div>
               <input
                 type="range"
                 min={20}
-                max={200}
+                max={500}
                 step={10}
                 value={maxPriceInr}
                 onChange={(e) => setMaxPriceInr(e.target.value)}
@@ -414,10 +474,13 @@ function ExploreContent() {
               <input
                 type="range"
                 min={2}
-                max={50}
+                max={100}
                 step={1}
                 value={radiusKm}
-                onChange={(e) => setRadiusKm(e.target.value)}
+                onChange={(e) => {
+                  setRadiusKm(e.target.value);
+                  setBounds(null);
+                }}
                 className="w-full accent-blue-600 cursor-pointer"
                 aria-label="Search radius"
               />
@@ -428,8 +491,8 @@ function ExploreContent() {
               <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={hasEvCharging === ""}
-                  onChange={() => setHasEvCharging("")}
+                  checked={wantParking}
+                  onChange={(e) => setWantParking(e.target.checked)}
                   className="rounded border-slate-300"
                 />
                 <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-emerald-600 text-[10px] font-bold text-white">
@@ -440,8 +503,8 @@ function ExploreContent() {
               <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={hasEvCharging === "true"}
-                  onChange={(e) => setHasEvCharging(e.target.checked ? "true" : "")}
+                  checked={wantEv}
+                  onChange={(e) => setWantEv(e.target.checked)}
                   className="rounded border-slate-300"
                 />
                 <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-blue-600 text-white">
@@ -521,52 +584,67 @@ function ExploreContent() {
           <div className="lg:col-span-9 space-y-6">
             <InteractiveCityMap
               facilities={facilities}
-              osmStations={osmStations}
+              osmStations={visibleOsmStations}
               selectedId={selectedId}
               onSelectFacility={setSelectedId}
               userLocation={userLocation}
+              isDefaultLocation={isDefaultLocation}
+              radiusKm={Number(radiusKm) || 25}
               locationStatus={locationStatus}
               locationError={locationError}
               onSearchBounds={(b) => setBounds(b)}
               onLocateUser={requestUserLocation}
               onResolveCityQuery={resolveCityQuery}
+              onUseDefaultLocation={useDefaultLocation}
             />
 
-            {/* Nearby Live OpenStreetMap EV Charging Points (when user location is shared) */}
-            {(osmStations.length > 0 || loadingOsm) && (
+            {/* Nearby External OpenStreetMap / Open Charge Map EV Charging Points */}
+            {(visibleOsmStations.length > 0 || loadingOsm) && (
               <Card className="p-4 bg-white border-slate-200/80 space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
                     <Zap className="h-4 w-4 text-teal-600" />
-                    EV Charging Points Near Your Location ({osmStations.length})
+                    Public EV Charging Points Within {radiusKm} km ({visibleOsmStations.length})
                   </h2>
                   {loadingOsm && <span className="text-xs text-slate-500">Scanning area...</span>}
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {osmStations.slice(0, 6).map((s) => (
+                  {visibleOsmStations.slice(0, 9).map((s) => (
                     <div
                       key={s.id}
                       onClick={() => setSelectedId(s.id)}
-                      className={`rounded-xl border p-3 text-xs space-y-1 cursor-pointer transition ${
+                      className={`rounded-xl border p-3 text-xs space-y-1.5 cursor-pointer transition ${
                         selectedId === s.id
                           ? "border-teal-600 bg-teal-50/50"
                           : "border-slate-200 hover:bg-slate-50"
                       }`}
                     >
-                      <div className="font-bold text-slate-900 truncate">{s.name}</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-900 truncate">{s.name}</span>
+                        <span className="shrink-0 rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-800">
+                          {s.source === "OPEN_CHARGE_MAP" ? "OCM" : "OSM"}
+                        </span>
+                      </div>
                       <div className="text-slate-600">
                         {s.distanceKm} km away {s.operator ? `· ${s.operator}` : ""}
                       </div>
+                      {s.address && <div className="text-[11px] text-slate-500">{s.address}</div>}
                       {s.sockets && <div className="text-[11px] text-slate-500">{s.sockets}</div>}
-                      <a
-                        href={`https://www.google.com/maps/dir/?api=1&destination=${s.latitude},${s.longitude}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline"
-                      >
-                        Directions <ExternalLink className="h-3 w-3" />
-                      </a>
+                      <div className="flex items-center justify-between pt-1">
+                        <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">
+                          <Clock className="h-2.5 w-2.5" />
+                          Availability unknown
+                        </span>
+                        <a
+                          href={`https://www.google.com/maps/dir/?api=1&destination=${s.latitude},${s.longitude}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline"
+                        >
+                          Directions <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -580,18 +658,19 @@ function ExploreContent() {
                   <Skeleton key={i} className="h-64 w-full" />
                 ))}
               </div>
-            ) : facilities.length === 0 ? (
+            ) : showEmptyResults ? (
               <Card className="p-8 text-center space-y-3">
                 <MapPin className="h-8 w-8 text-slate-400 mx-auto" />
                 <h3 className="font-bold text-slate-900">No matching hubs found</h3>
                 <p className="text-xs text-slate-600">
-                  Clear your filters or search area bounds to view all facilities.
+                  No registered ParkSmart hubs or public EV stations matched your current radius
+                  and filters.
                 </p>
                 <Button size="sm" variant="outline" onClick={clearAllFilters}>
                   Reset Filters
                 </Button>
               </Card>
-            ) : (
+            ) : facilities.length > 0 ? (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {facilities.map((fac) => {
                   const isSelected = fac.id === selectedId;
@@ -612,7 +691,7 @@ function ExploreContent() {
                         className="h-36 w-full object-cover"
                       />
                       <div className="p-4 flex-1 flex flex-col justify-between space-y-3">
-                        <div className="space-y-1">
+                        <div className="space-y-1.5">
                           <div className="flex items-start justify-between gap-2">
                             <h3 className="font-bold text-sm text-slate-900 line-clamp-1">
                               {fac.name}
@@ -637,11 +716,29 @@ function ExploreContent() {
                             </strong>
                             /hr · {userLocation ? `${fac.distanceKm} km` : fac.city}
                           </div>
-                          <div className="text-xs font-semibold text-emerald-700">
-                            {fac.availableSpaces}/{fac.totalCapacity} Available
-                            {fac.hasEvCharging && (
-                              <span className="ml-2 text-blue-700">
-                                · {fac.availableConnectors} EV
+                          <div className="flex flex-wrap gap-1">
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                fac.availabilityStatus === "LIVE"
+                                  ? "bg-emerald-50 text-emerald-700"
+                                  : fac.availabilityStatus === "STALE"
+                                    ? "bg-amber-50 text-amber-700"
+                                    : "bg-slate-100 text-slate-700"
+                              }`}
+                            >
+                              {fac.availabilityStatus === "UNKNOWN"
+                                ? "Availability unknown"
+                                : `${fac.availableSpaces}/${fac.totalCapacity} (${fac.availabilityStatus})`}
+                            </span>
+                            {fac.ownerVerified && (
+                              <span className="inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">
+                                <ShieldCheck className="h-2.5 w-2.5" />
+                                Owner Verified
+                              </span>
+                            )}
+                            {fac.stationDocsVerified && (
+                              <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700">
+                                Docs Verified
                               </span>
                             )}
                           </div>
@@ -663,7 +760,7 @@ function ExploreContent() {
                   );
                 })}
               </div>
-            )}
+            ) : null}
 
             {comparedFacilities.length > 0 && (
               <Card className="p-5 space-y-3">
@@ -682,7 +779,9 @@ function ExploreContent() {
                       <div className="font-bold text-slate-900">{f.name}</div>
                       <div>{formatPaise(f.hourlyRatePaise)}/hr</div>
                       <div className="text-emerald-700 font-semibold">
-                        {f.availableSpaces}/{f.totalCapacity} Bays Free
+                        {f.availabilityStatus === "UNKNOWN"
+                          ? "Availability unknown"
+                          : `${f.availableSpaces}/${f.totalCapacity} Bays Free`}
                       </div>
                       <Badge variant={f.hasEvCharging ? "info" : "neutral"}>
                         {f.hasEvCharging ? `${f.maxChargerKw}kW EV` : "Parking Only"}

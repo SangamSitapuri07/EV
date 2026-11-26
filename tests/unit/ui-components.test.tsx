@@ -13,6 +13,10 @@ const sampleFacility: FacilitySearchResultItem = {
   description: "Test garage",
   facilityType: "MULTI_LEVEL_GARAGE",
   dataSourceType: "OPERATOR_MANAGED",
+  ownerVerified: true,
+  stationDocsVerified: false,
+  liveAvailabilityConnected: false,
+  availabilityStatus: "UNKNOWN",
   addressLine1: "Plot 14, Main Market",
   landmark: null,
   city: "Ludhiana",
@@ -42,7 +46,7 @@ const sampleFacility: FacilitySearchResultItem = {
   availabilityUpdatedAt: new Date().toISOString(),
   isStale: false,
   amenities: ["CCTV 24x7"],
-  photos: ["/images/facility-plaza.svg"],
+  photos: ["/images/facility-mall.jpg"],
 };
 
 describe("UI Components (React Testing Library)", () => {
@@ -51,31 +55,54 @@ describe("UI Components (React Testing Library)", () => {
       <div>
         <StatusPill status="AVAILABLE" />
         <StatusPill status="FAULTED" />
-        <Badge variant="warning">Simulated OCPP</Badge>
+        <Badge variant="warning">Owner Verified</Badge>
         <Button onClick={() => {}}>Reserve Bay</Button>
       </div>
     );
 
     expect(screen.getByText("AVAILABLE")).toBeInTheDocument();
     expect(screen.getByText("FAULTED")).toBeInTheDocument();
-    expect(screen.getByText("Simulated OCPP")).toBeInTheDocument();
+    expect(screen.getByText("Owner Verified")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reserve Bay" })).toBeInTheDocument();
   });
 
-  it("renders InteractiveCityMap markers, heatmap toggle, and locate callback", () => {
+  it("renders InteractiveCityMap markers, authenticity/unknown availability badges, and locate callback", () => {
     const onSelectFacility = vi.fn();
     const onLocateUser = vi.fn();
 
     render(
       <InteractiveCityMap
         facilities={[sampleFacility]}
-        selectedId={null}
+        osmStations={[
+          {
+            id: "osm-99",
+            source: "OPENSTREETMAP_OVERPASS",
+            name: "Public Highway Charger",
+            operator: "Highway Grid",
+            address: "NH44",
+            latitude: 31.32,
+            longitude: 75.57,
+            distanceKm: 2.1,
+            connectorStandards: ["CCS2"],
+            maxPowerKw: 60,
+            sockets: "Connectors: CCS2 (2)",
+            ownerVerified: false,
+            stationDocsVerified: false,
+            liveAvailabilityConnected: false,
+            availabilityStatus: "UNKNOWN",
+            availabilityUpdatedAt: null,
+          },
+        ]}
+        selectedId="osm-99"
         onSelectFacility={onSelectFacility}
         userLocation={null}
         onSearchBounds={vi.fn()}
         onLocateUser={onLocateUser}
       />
     );
+
+    expect(screen.getByText("Public Highway Charger")).toBeInTheDocument();
+    expect(screen.getByText(/Availability unknown/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Use my current location/i }));
     expect(onLocateUser).toHaveBeenCalledTimes(1);
