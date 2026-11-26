@@ -45,14 +45,15 @@ export function handleApiError(err: unknown) {
     const firstFieldEntry = Object.entries(flat.fieldErrors).find(
       ([, msgs]) => Array.isArray(msgs) && msgs.length > 0
     );
-    const devSuffix =
-      process.env.NODE_ENV !== "production" && firstFieldEntry
-        ? `: ${firstFieldEntry[0]} — ${firstFieldEntry[1]?.[0]}`
+    const fieldDetail = firstFieldEntry
+      ? `: ${firstFieldEntry[0]} — ${firstFieldEntry[1]?.[0]}`
+      : flat.formErrors[0]
+        ? `: ${flat.formErrors[0]}`
         : "";
     return apiError(
       400,
       "VALIDATION_ERROR",
-      `Invalid request payload${devSuffix}`,
+      `Invalid request payload${fieldDetail}`,
       flat
     );
   }

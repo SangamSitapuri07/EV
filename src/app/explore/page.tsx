@@ -68,6 +68,7 @@ function ExploreContent() {
 
   const [facilities, setFacilities] = useState<FacilitySearchResultItem[]>([]);
   const [osmStations, setOsmStations] = useState<ExternalEvChargerStation[]>([]);
+  const [externalAttributions, setExternalAttributions] = useState<string[]>([]);
   const [externalNotice, setExternalNotice] = useState<string | null>(null);
   const [loadingOsm, setLoadingOsm] = useState(false);
   const [showAllStations, setShowAllStations] = useState(false);
@@ -107,12 +108,14 @@ function ExploreContent() {
         };
         if (!res.ok || !json.ok || !json.data) {
           setOsmStations([]);
+          setExternalAttributions([]);
           setExternalNotice(
             json.error?.message || "Could not load external nearby EV charging stations."
           );
           return;
         }
         setOsmStations(json.data.stations);
+        setExternalAttributions(json.data.attributions ?? []);
         const indiaDatasetSource = json.data.sources.indiaOpenDataset;
         const beeSource = json.data.sources.beeIndiaApi;
         const osmSource = json.data.sources.openStreetMapOverpass;
@@ -788,15 +791,20 @@ function ExploreContent() {
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-bold text-slate-900 truncate">{s.name}</span>
-                        <span className="shrink-0 rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-800">
-                          {s.source === "INDIA_OPEN_EV_DATA"
-                            ? "India EV"
-                            : s.source === "BEE_INDIA_API"
-                              ? "BEE India"
-                              : s.source === "OPEN_CHARGE_MAP"
-                                ? "OCM"
-                                : "OSM"}
-                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                            Directory
+                          </span>
+                          <span className="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-800">
+                            {s.source === "INDIA_OPEN_EV_DATA"
+                              ? "India EV"
+                              : s.source === "BEE_INDIA_API"
+                                ? "BEE Snapshot"
+                                : s.source === "OPEN_CHARGE_MAP"
+                                  ? "OCM"
+                                  : "OSM"}
+                          </span>
+                        </div>
                       </div>
                       <div className="text-slate-600">
                         {s.distanceKm} km away
@@ -805,6 +813,9 @@ function ExploreContent() {
                       </div>
                       {s.address && <div className="text-[11px] text-slate-500">{s.address}</div>}
                       {s.sockets && <div className="text-[11px] text-slate-500">{s.sockets}</div>}
+                      {s.freshnessLabel && (
+                        <div className="text-[10px] text-slate-400">{s.freshnessLabel}</div>
+                      )}
                       <div className="flex items-center justify-between pt-1">
                         <span
                           className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
@@ -824,7 +835,7 @@ function ExploreContent() {
                             ? `${s.availableConnectors}/${s.totalConnectors} available`
                             : s.availabilityStatus === "STALE"
                               ? "Stale availability"
-                              : "Availability unknown"}
+                              : "Live availability not connected"}
                         </span>
                         <button
                           type="button"
@@ -847,9 +858,13 @@ function ExploreContent() {
                   ))}
                 </div>
                 <p className="text-[11px] text-slate-500 pt-1 border-t border-slate-100">
-                  Public EV directory data: India EV Charging Dataset (ODbL v1.0, 28,553 sites
-                  across ChargeZone, MG eHUB, Kia/Numocity, Ather Grid, Bolt.Earth) · Bureau of
-                  Energy Efficiency (BEE) · OpenStreetMap contributors.
+                  Directory listings are sourced from external datasets and are not verified by
+                  ParkSmart or connected to live bay telemetry unless marked{" "}
+                  <strong className="text-slate-700">Owner Verified</strong> /{" "}
+                  <strong className="text-slate-700">LIVE</strong>.{" "}
+                  {externalAttributions.length > 0
+                    ? `Sources: ${externalAttributions.join(" · ")}.`
+                    : "Sources: India EV Charging Dataset (ODbL v1.0) · OpenStreetMap contributors."}
                 </p>
               </Card>
             )}

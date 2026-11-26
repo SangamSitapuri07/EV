@@ -77,15 +77,20 @@ describe("UI Components (React Testing Library)", () => {
           {
             id: "osm-99",
             source: "OPENSTREETMAP_OVERPASS",
+            sourceId: "node/99",
             name: "Public Highway Charger",
             operator: "Highway Grid",
             address: "NH44",
             latitude: 31.32,
             longitude: 75.57,
             distanceKm: 2.1,
+            connectors: [{ standard: "CCS2", powerKw: 60, count: 2, label: "CCS2 (60 kW)" }],
             connectorStandards: ["CCS2"],
             maxPowerKw: 60,
             sockets: "Connectors: CCS2 (2)",
+            sourceUpdatedAt: null,
+            freshnessLabel: "Community map data",
+            listingType: "SOURCE_LISTED",
             ownerVerified: false,
             stationDocsVerified: false,
             liveAvailabilityConnected: false,
@@ -102,7 +107,8 @@ describe("UI Components (React Testing Library)", () => {
     );
 
     expect(screen.getByText("Public Highway Charger")).toBeInTheDocument();
-    expect(screen.getByText(/Availability unknown/i)).toBeInTheDocument();
+    expect(screen.getByText(/Directory listing/i)).toBeInTheDocument();
+    expect(screen.getByText(/Live availability not connected/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Use my current location/i }));
     expect(onLocateUser).toHaveBeenCalledTimes(1);

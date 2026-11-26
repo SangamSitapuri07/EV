@@ -129,6 +129,10 @@ describe("Explore Page Interactions", () => {
 
     expect(await screen.findByText(/EV Charging Stations Within 25 km \(1\)/i))
       .toBeInTheDocument();
+    expect(screen.getAllByText(/Directory/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Live availability not connected/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/not verified by ParkSmart/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Book Now/i })).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("overpass-api.de/api/interpreter"),
       expect.any(Object)

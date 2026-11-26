@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { GET as getFacilities } from "@/app/api/v1/facilities/route";
 import { GET as getNearbyChargers } from "@/app/api/v1/ev-chargers/nearby/route";
-import { discoverNearbyExternalEvChargers } from "@/features/search/nearby-chargers.service";
+import {
+  clearNearbyChargersCacheForTests,
+  deduplicateStations,
+  discoverNearbyExternalEvChargers,
+} from "@/features/search/nearby-chargers.service";
 import { computeInAppRoute } from "@/lib/in-app-navigation";
 import { resetDbForTests, ensureDatabaseReady } from "@/db";
 import { facilities } from "@/db/schema";
@@ -10,11 +14,19 @@ import { eq } from "drizzle-orm";
 describe("Search validation, nearby EV discovery, radius & authenticity", () => {
   beforeEach(async () => {
     process.env.DATABASE_URL = "pglite://memory";
+    delete process.env.OPEN_CHARGE_MAP_API_KEY;
+    clearNearbyChargersCacheForTests();
     await resetDbForTests();
     await ensureDatabaseReady();
   });
 
-  it("rejects radiusKm > 100 and malformed/partial coordinates with 400 validation error", async () => {
+  afterEach(() => {
+    delete process.env.OPEN_CHARGE_MAP_API_KEY;
+    clearNearbyChargersCacheForTests();
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects radiusKm > 100 and malformed/partial coordinates with 400 and field-level validation details", async () => {
     const resRadius = await getFacilities(
       new Request(
         "http://localhost/api/v1/facilities?lat=31.29&lng=75.57&radiusKm=500&hasEvCharging=true"
@@ -24,11 +36,15 @@ describe("Search validation, nearby EV discovery, radius & authenticity", () => 
     const jsonRadius = await resRadius.json();
     expect(jsonRadius.ok).toBe(false);
     expect(jsonRadius.error.code).toBe("VALIDATION_ERROR");
+    expect(jsonRadius.error.message).toContain("Invalid request payload:");
+    expect(jsonRadius.error.message).toContain("radiusKm");
 
     const resPartial = await getFacilities(
       new Request("http://localhost/api/v1/facilities?lat=31.29")
     );
     expect(resPartial.status).toBe(400);
+    const jsonPartial = await resPartial.json();
+    expect(jsonPartial.error.message).toContain("Invalid request payload:");
 
     const resOutOfBounds = await getFacilities(
       new Request("http://localhost/api/v1/facilities?lat=120&lng=75.57")
@@ -39,6 +55,9 @@ describe("Search validation, nearby EV discovery, radius & authenticity", () => 
       new Request("http://localhost/api/v1/ev-chargers/nearby?lat=notanumber&lng=75.57")
     );
     expect(resNearbyBad.status).toBe(400);
+    const jsonNearbyBad = await resNearbyBad.json();
+    expect(jsonNearbyBad.error.message).toContain("Invalid request payload:");
+    expect(jsonNearbyBad.error.message).toContain("lat");
 
     const resNearbyMissing = await getNearbyChargers(
       new Request("http://localhost/api/v1/ev-chargers/nearby")
@@ -319,11 +338,217 @@ describe("Search validation, nearby EV discovery, radius & authenticity", () => 
     expect(result.stations[0]).toMatchObject({
       id: "bee-evs_1234567890",
       source: "BEE_INDIA_API",
+      sourceId: "evs_1234567890",
       name: "BEE Public Charger Ludhiana",
       operator: "PSPCL / EESL",
       connectorStandards: ["CCS2"],
       maxPowerKw: 60,
+      listingType: "SOURCE_LISTED",
+      freshnessLabel: "BEE snapshot Oct 26, 2025",
       availabilityStatus: "UNKNOWN",
     });
+  });
+
+  it("queries Open Charge Map securely via X-API-Key header, parses pricing/freshness, and enforces 429 cooldown", async () => {
+    process.env.OPEN_CHARGE_MAP_API_KEY = "test-ocm-key-123";
+    const capturedCalls: Array<{ url: string; headers: HeadersInit | undefined }> = [];
+
+    const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      capturedCalls.push({ url, headers: init?.headers });
+      return new Response(
+        JSON.stringify([
+          {
+            ID: 998877,
+            DateLastStatusUpdate: "2026-11-20T10:15:00Z",
+            UsageCost: "₹18/kWh + GST",
+            DataProvider: { Title: "Open Charge Map Contributors" },
+            AddressInfo: {
+              Title: "Model Town Plaza EV Hub",
+              AddressLine1: "GT Road",
+              Town: "Jalandhar",
+              Latitude: 31.305,
+              Longitude: 75.575,
+            },
+            OperatorInfo: { Title: "Tata Power EZ Charge" },
+            Connections: [
+              { PowerKW: 60, Quantity: 2, ConnectionType: { Title: "CCS (Type 2)" } },
+              { PowerKW: 22, Quantity: 1, ConnectionType: { Title: "Type 2 (Socket Only)" } },
+            ],
+          },
+        ]),
+        { status: 200 }
+      );
+    }) as unknown as typeof fetch;
+
+    const result = await discoverNearbyExternalEvChargers({
+      lat: 31.29,
+      lng: 75.57,
+      radiusKm: 25,
+      includeLocalIndiaDataset: false,
+      includeBeeIndiaApi: false,
+      includeOpenChargeMap: true,
+      includeOverpass: false,
+      fetchFn: mockFetch,
+    });
+
+    expect(capturedCalls).toHaveLength(1);
+    expect(capturedCalls[0]!.url).not.toContain("key=");
+    expect((capturedCalls[0]!.headers as Record<string, string>)["X-API-Key"]).toBe(
+      "test-ocm-key-123"
+    );
+    expect(result.sources.openChargeMap.status).toBe("OK");
+    expect(result.attributions).toContain(
+      "Open Charge Map contributors (CC BY 4.0, openchargemap.org)"
+    );
+    expect(result.stations[0]).toMatchObject({
+      id: "ocm-998877",
+      source: "OPEN_CHARGE_MAP",
+      sourceId: "998877",
+      name: "Model Town Plaza EV Hub",
+      operator: "Tata Power EZ Charge",
+      pricing: "₹18/kWh + GST",
+      maxPowerKw: 60,
+      totalConnectors: 3,
+      connectorStandards: ["CCS2", "TYPE2_AC"],
+      listingType: "SOURCE_LISTED",
+      sourceUpdatedAt: "2026-11-20T10:15:00Z",
+      availabilityStatus: "UNKNOWN",
+    });
+
+    // Simulate HTTP 429 rate limit and verify cooldown suppresses immediate retry
+    const rateLimitedFetch = vi.fn(
+      async () => new Response("Too Many Requests", { status: 429 })
+    ) as unknown as typeof fetch;
+    const rateLimitedRes = await discoverNearbyExternalEvChargers({
+      lat: 31.29,
+      lng: 75.57,
+      radiusKm: 25,
+      includeLocalIndiaDataset: false,
+      includeBeeIndiaApi: false,
+      includeOpenChargeMap: true,
+      includeOverpass: false,
+      fetchFn: rateLimitedFetch,
+    });
+    expect(rateLimitedRes.sources.openChargeMap.status).toBe("UNAVAILABLE");
+    expect(rateLimitedRes.allEnabledProvidersFailed).toBe(true);
+
+    const secondCallFetch = vi.fn() as unknown as typeof fetch;
+    const cooledDownRes = await discoverNearbyExternalEvChargers({
+      lat: 31.29,
+      lng: 75.57,
+      radiusKm: 25,
+      includeLocalIndiaDataset: false,
+      includeBeeIndiaApi: false,
+      includeOpenChargeMap: true,
+      includeOverpass: false,
+      fetchFn: secondCallFetch,
+    });
+    expect(secondCallFetch).not.toHaveBeenCalled();
+    expect(cooledDownRes.sources.openChargeMap.message).toContain("cooldown");
+  });
+
+  it("preserves distinct operators 55m apart while merging true duplicate station records", () => {
+    const deduped = deduplicateStations([
+      {
+        id: "india-ev-1",
+        source: "INDIA_OPEN_EV_DATA",
+        sourceId: "1",
+        name: "Tata Power Model Town Mall",
+        operator: "Tata Power",
+        address: "Model Town, Jalandhar",
+        latitude: 31.305,
+        longitude: 75.575,
+        distanceKm: 1.5,
+        connectors: [{ standard: "CCS2", powerKw: 60, count: 2, label: "CCS2 @ 60kW" }],
+        connectorStandards: ["CCS2"],
+        maxPowerKw: 60,
+        sockets: "CCS2 · 60 kW",
+        pricing: "₹18/kWh",
+        sourceUpdatedAt: "2026-11-16",
+        freshnessLabel: "Updated Nov 16, 2026",
+        listingType: "SOURCE_LISTED",
+        ownerVerified: false,
+        stationDocsVerified: false,
+        liveAvailabilityConnected: false,
+        availabilityStatus: "UNKNOWN",
+        availabilityUpdatedAt: "2026-11-16",
+      },
+      {
+        id: "osm-2",
+        source: "OPENSTREETMAP_OVERPASS",
+        sourceId: "node/2",
+        name: "HPCL eCharge Model Town",
+        operator: "HPCL",
+        address: "Opposite Model Town Mall, Jalandhar",
+        // ~55 meters away from Tata Power
+        latitude: 31.30545,
+        longitude: 75.5752,
+        distanceKm: 1.55,
+        connectors: [{ standard: "TYPE2_AC", powerKw: 22, count: 1, label: "Type 2 (22 kW)" }],
+        connectorStandards: ["TYPE2_AC"],
+        maxPowerKw: 22,
+        sockets: "Type 2 · 22 kW",
+        pricing: null,
+        sourceUpdatedAt: null,
+        freshnessLabel: "Community map data",
+        listingType: "SOURCE_LISTED",
+        ownerVerified: false,
+        stationDocsVerified: false,
+        liveAvailabilityConnected: false,
+        availabilityStatus: "UNKNOWN",
+        availabilityUpdatedAt: null,
+      },
+      {
+        id: "ocm-3",
+        source: "OPEN_CHARGE_MAP",
+        sourceId: "3",
+        name: "Tata Power Model Town Mall Hub",
+        operator: "Tata Power EZ Charge",
+        address: "Model Town, Jalandhar",
+        // Same station duplicate 80m away in another feed
+        latitude: 31.3056,
+        longitude: 75.5754,
+        distanceKm: 1.56,
+        connectors: [{ standard: "TYPE2_AC", powerKw: 7.4, count: 1, label: "Type 2 (7.4 kW)" }],
+        connectorStandards: ["TYPE2_AC"],
+        maxPowerKw: 7.4,
+        sockets: null,
+        pricing: null,
+        sourceUpdatedAt: null,
+        freshnessLabel: "Open Charge Map listing",
+        listingType: "SOURCE_LISTED",
+        ownerVerified: false,
+        stationDocsVerified: false,
+        liveAvailabilityConnected: false,
+        availabilityStatus: "UNKNOWN",
+        availabilityUpdatedAt: null,
+      },
+    ]);
+
+    expect(deduped).toHaveLength(2);
+    expect(deduped.map((s) => s.operator)).toEqual(["Tata Power", "HPCL"]);
+    expect(deduped[0]!.connectorStandards).toEqual(["CCS2", "TYPE2_AC"]);
+  });
+
+  it("returns 502 PROVIDER_UNAVAILABLE from /api/v1/ev-chargers/nearby when all enabled providers fail", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("Upstream Overpass unreachable");
+      })
+    );
+
+    // Coordinates outside India so local India CSV and BEE API are skipped; only Overpass is enabled
+    const res = await getNearbyChargers(
+      new Request("http://localhost/api/v1/ev-chargers/nearby?lat=51.5074&lng=-0.1278&radiusKm=10")
+    );
+
+    expect(res.status).toBe(502);
+    const json = await res.json();
+    expect(json.ok).toBe(false);
+    expect(json.error.code).toBe("PROVIDER_UNAVAILABLE");
+    expect(json.error.message).toContain("openStreetMapOverpass");
+    expect(json.error.details.providerErrors).toHaveLength(1);
   });
 });

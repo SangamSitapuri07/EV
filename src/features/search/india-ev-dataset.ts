@@ -1,15 +1,21 @@
 import fs from "node:fs";
 import path from "node:path";
 import { haversineKm } from "@/lib/utils";
-import type { ExternalEvChargerStation } from "./nearby-chargers.shared";
+import {
+  formatSourceFreshness,
+  type ExternalEvChargerStation,
+  type NormalizedConnectorInfo,
+} from "./nearby-chargers.shared";
 
 interface IndiaDatasetRow {
   id: string;
+  sourceId: string;
   name: string;
   operator: string | null;
   address: string | null;
   lat: number;
   lng: number;
+  connectors: NormalizedConnectorInfo[];
   connectorStandards: string[];
   maxPowerKw: number | null;
   sockets: string | null;
@@ -64,21 +70,65 @@ function parseRfc4180Csv(content: string): string[][] {
   return rows;
 }
 
-function mapIndiaConnectorStandards(rawConnectors: string): string[] {
+function mapIndiaConnectorToken(tokenRaw: string): string | null {
+  const token = tokenRaw.trim().toLowerCase();
+  if (!token) return null;
+  if (token.startsWith("ccs2")) return "CCS2";
+  if (token.startsWith("type2")) return "TYPE2_AC";
+  if (token.startsWith("chademo")) return "CHADEMO";
+  if (token.startsWith("gb/t") || token.startsWith("gb-t")) return "GB_T";
+  if (token.startsWith("bharat ac")) return "BHARAT_AC001";
+  if (token.startsWith("bharat dc")) return "BHARAT_DC001";
+  if (token.startsWith("type1")) return "TYPE1_J1772";
+  if (token.startsWith("3-pin")) return "THREE_PIN_15A";
+  return null;
+}
+
+function parseIndiaConnectors(rawConnectors: string): {
+  connectors: NormalizedConnectorInfo[];
+  standards: string[];
+} {
   const standards = new Set<string>();
+  const connectors: NormalizedConnectorInfo[] = [];
+
   for (const part of rawConnectors.split(";")) {
-    const token = part.split("@")[0]?.trim().toLowerCase() ?? "";
-    if (!token) continue;
-    if (token.startsWith("ccs2")) standards.add("CCS2");
-    else if (token.startsWith("type2")) standards.add("TYPE2_AC");
-    else if (token.startsWith("chademo")) standards.add("CHADEMO");
-    else if (token.startsWith("gb/t") || token.startsWith("gb-t")) standards.add("GB_T");
-    else if (token.startsWith("bharat ac")) standards.add("BHARAT_AC001");
-    else if (token.startsWith("bharat dc")) standards.add("BHARAT_DC001");
-    else if (token.startsWith("type1")) standards.add("TYPE1_J1772");
-    else if (token.startsWith("3-pin")) standards.add("THREE_PIN_15A");
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const [typePart, rest] = trimmed.split("@");
+    const std = mapIndiaConnectorToken(typePart ?? "");
+    if (std) standards.add(std);
+
+    let powerKw: number | null = null;
+    let count: number | null = null;
+    if (rest) {
+      const kwMatch = rest.match(/([\d.]+)\s*kw/i);
+      if (kwMatch?.[1]) {
+        const parsedKw = parseFloat(kwMatch[1]);
+        if (Number.isFinite(parsedKw) && parsedKw > 0) powerKw = parsedKw;
+      }
+      const xMatch = rest.match(/x\s*(\d+)/i);
+      if (xMatch?.[1]) {
+        const parsedCount = parseInt(xMatch[1], 10);
+        if (Number.isFinite(parsedCount) && parsedCount > 0) count = parsedCount;
+      }
+    }
+    if (!count && typePart) {
+      const xMatch = typePart.match(/x\s*(\d+)/i);
+      if (xMatch?.[1]) {
+        const parsedCount = parseInt(xMatch[1], 10);
+        if (Number.isFinite(parsedCount) && parsedCount > 0) count = parsedCount;
+      }
+    }
+
+    connectors.push({
+      standard: std ?? (typePart?.trim() || "UNKNOWN"),
+      powerKw,
+      count,
+      label: trimmed,
+    });
   }
-  return Array.from(standards);
+
+  return { connectors, standards: Array.from(standards) };
 }
 
 function loadIndiaOpenDataset(): IndiaDatasetRow[] {
@@ -169,15 +219,18 @@ function loadIndiaOpenDataset(): IndiaDatasetRow[] {
       : null;
 
     const operator = (r[iOp] ?? "").trim() || (r[iNet] ?? "").trim() || null;
+    const { connectors, standards } = parseIndiaConnectors(rawConnectors);
 
     parsed.push({
       id: `india-ev-${i}`,
+      sourceId: String(i),
       name: (r[iName] ?? "").trim() || operator || "Public EV Charging Station",
       operator,
       address,
       lat,
       lng,
-      connectorStandards: mapIndiaConnectorStandards(rawConnectors),
+      connectors,
+      connectorStandards: standards,
       maxPowerKw,
       sockets: socketsText,
       totalConnectors,
@@ -221,18 +274,28 @@ export function queryIndiaOpenEvDataset(params: {
     matches.push({
       id: row.id,
       source: "INDIA_OPEN_EV_DATA",
+      sourceId: row.sourceId,
       name: row.name,
       operator: row.operator,
       address: row.address,
       latitude: row.lat,
       longitude: row.lng,
       distanceKm,
+      connectors: row.connectors,
       connectorStandards: row.connectorStandards,
       maxPowerKw: row.maxPowerKw,
       sockets: row.sockets,
       totalConnectors: row.totalConnectors,
       pricing: row.pricing,
-      sourcesLabel: row.sources,
+      sourcesLabel: row.sources
+        ? `${row.sources} · India EV Charging Dataset (ODbL v1.0)`
+        : "India EV Charging Dataset (ODbL v1.0)",
+      sourceUpdatedAt: row.lastUpdated,
+      freshnessLabel: formatSourceFreshness(
+        row.lastUpdated,
+        "Dataset snapshot Nov 16, 2026"
+      ),
+      listingType: "SOURCE_LISTED",
       ownerVerified: false,
       stationDocsVerified: false,
       liveAvailabilityConnected: false,
