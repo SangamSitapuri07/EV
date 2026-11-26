@@ -61,7 +61,7 @@ export async function POST(req: Request) {
           gstNumber: body.gstinNumber || null,
           operatorType: user.role === "EV_OPERATOR" ? "EV_CHARGING" : "PARKING",
           contactEmail: user.email,
-          contactPhone: "+91-98000-00000",
+          contactPhone: "",
           status: "PENDING_VERIFICATION",
         })
         .returning();

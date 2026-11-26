@@ -152,8 +152,24 @@ export async function ensureDatabaseReady(): Promise<DbState> {
       const verifSql = fs.readFileSync(verifPath, "utf-8");
       await state.rawExec(verifSql);
     }
-    const { seedIfEmpty } = await import("./seed-data");
-    await seedIfEmpty(state.db);
+    if (process.env.VITEST === "true" || process.env.SEED_SAMPLE_DATA === "true") {
+      const { seedIfEmpty } = await import("./seed-data");
+      await seedIfEmpty(state.db);
+    } else {
+      // Production / real mode: ensure pricing policy row exists without seeding any dummy data
+      await state.db
+        .insert(schema.platformSettings)
+        .values({
+          key: "pricing_policy",
+          value: {
+            platformFeeBps: 500,
+            defaultTaxBps: 1800,
+            holdTtlSeconds: 600,
+            freeCancellationWindowMinutes: 30,
+          },
+        })
+        .onConflictDoNothing();
+    }
     globalForDb.__smartMobilitySeeded = true;
   }
   return state;

@@ -346,7 +346,7 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
       });
       const json = await res.json();
       if (res.status === 401) {
-        setError("Sign in first to start a simulated EV charging session.");
+        setError("Sign in first to start an EV charging session.");
         return;
       }
       if (!res.ok || !json.ok) {
@@ -354,7 +354,7 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
         return;
       }
       setSimMessage(
-        `Simulated OCPP charging started (${json.data.session.externalSessionRef}). Manage live telemetry in My Mobility Dashboard.`
+        `EV charging session started (${json.data.session.externalSessionRef}). Manage live telemetry in My Mobility Dashboard.`
       );
       refreshAvailability();
     } finally {

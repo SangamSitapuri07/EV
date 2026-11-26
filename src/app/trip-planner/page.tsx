@@ -10,7 +10,7 @@ import {
   Clock,
   Zap,
   ArrowRight,
-  Info,
+  LocateFixed,
 } from "lucide-react";
 import { Badge, Button, Card, Input, Select, StatusPill } from "@/components/ui/primitives";
 
@@ -47,23 +47,28 @@ interface TripPlanResult {
   dataDisclosure: string;
 }
 
-const CITY_PRESETS = [
-  { label: "Ludhiana Clock Tower (Origin)", lat: 30.901, lng: 75.8573 },
-  { label: "Sarabha Nagar Market", lat: 30.8842, lng: 75.8172 },
-  { label: "Ferozepur Road / MBD Mall", lat: 30.8768, lng: 75.7924 },
-  { label: "Chandigarh Sector 17 Corridor", lat: 30.7398, lng: 76.7827 },
-];
+async function geocodePlace(query: string): Promise<{ lat: number; lng: number } | null> {
+  const res = await fetch(
+    `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`
+  );
+  if (!res.ok) return null;
+  const rows = (await res.json()) as Array<{ lat: string; lon: string }>;
+  if (!rows[0]) return null;
+  return { lat: Number(rows[0].lat), lng: Number(rows[0].lon) };
+}
 
 export default function TripPlannerPage() {
   const [zones, setZones] = useState<HeatmapZone[]>([]);
   const [heatmapDisclaimer, setHeatmapDisclaimer] = useState<string>("");
-  const [originIdx, setOriginIdx] = useState("0");
-  const [destIdx, setDestIdx] = useState("3");
+  const [originQuery, setOriginQuery] = useState("");
+  const [originCoords, setOriginCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [destQuery, setDestQuery] = useState("");
   const [soc, setSoc] = useState("24");
   const [vehicleRangeKm, setVehicleRangeKm] = useState("340");
   const [connector, setConnector] = useState("CCS2");
   const [plan, setPlan] = useState<TripPlanResult | null>(null);
   const [planning, setPlanning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/v1/insights/heatmap")
@@ -77,12 +82,36 @@ export default function TripPlannerPage() {
       .catch(() => {});
   }, []);
 
+  function handleUseCurrentGps() {
+    if (!navigator.geolocation) {
+      setError("Geolocation is not supported by your browser.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setOriginCoords(coords);
+        setOriginQuery(`${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`);
+        setError(null);
+      },
+      () => {
+        setError("Location access declined. Enter your origin city or address manually.");
+      }
+    );
+  }
+
   async function handlePlanTrip(e: React.FormEvent) {
     e.preventDefault();
+    setError(null);
     setPlanning(true);
-    const origin = CITY_PRESETS[Number(originIdx)]!;
-    const dest = CITY_PRESETS[Number(destIdx)]!;
     try {
+      const origin = originCoords ?? (await geocodePlace(originQuery));
+      const dest = await geocodePlace(destQuery);
+      if (!origin || !dest) {
+        setError("Could not locate origin or destination. Enter a valid city/address or use GPS.");
+        return;
+      }
+
       const res = await fetch("/api/v1/insights/ev-trip", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -99,7 +128,11 @@ export default function TripPlannerPage() {
       const json = await res.json();
       if (json.ok) {
         setPlan(json.data);
+      } else {
+        setError(json.error?.message || "Could not plan trip");
       }
+    } catch {
+      setError("Network error planning trip");
     } finally {
       setPlanning(false);
     }
@@ -108,55 +141,70 @@ export default function TripPlannerPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 space-y-8">
       <div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="warning">Rule-Based Analytics + Live DB State</Badge>
-          <Badge variant="info">Transparent Approximations</Badge>
-        </div>
-        <h1 className="mt-2 text-2xl font-bold text-slate-900 flex items-center gap-2">
-          <Route className="h-6 w-6 text-emerald-700" />
-          EV Trip Charge Planner &amp; City Occupancy Heatmap
+        <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+          <Route className="h-6 w-6 text-emerald-600" />
+          EV Route Planner &amp; Live Occupancy Heatmap
         </h1>
-        <p className="text-sm text-slate-600 mt-1">
-          Calculate SoC range margins along your corridor, locate compatible DC fast chargers, and inspect real-time facility load.
+        <p className="text-xs text-slate-600 mt-1">
+          Plan charging stops using your real GPS / destination and monitor occupancy across registered hubs.
         </p>
       </div>
 
-      {/* EV Trip Planner */}
-      <div className="grid gap-6 lg:grid-cols-12">
-        <Card className="lg:col-span-5 p-6 space-y-4">
+      <div className="grid gap-8 lg:grid-cols-12 items-start">
+        <Card className="lg:col-span-6 p-6 space-y-5">
           <h2 className="font-bold text-slate-900 flex items-center gap-2">
             <BatteryCharging className="h-5 w-5 text-amber-600" />
-            Plan En-Route Charging Stop
+            EV Corridor Range &amp; Stop Planner
           </h2>
-          <form onSubmit={handlePlanTrip} className="space-y-3">
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-700">Origin</label>
-              <Select value={originIdx} onChange={(e) => setOriginIdx(e.target.value)}>
-                {CITY_PRESETS.map((p, idx) => (
-                  <option key={p.label} value={idx}>
-                    {p.label}
-                  </option>
-                ))}
-              </Select>
+
+          {error && (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+              {error}
             </div>
+          )}
+
+          <form onSubmit={handlePlanTrip} className="space-y-4">
             <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-700">Destination</label>
-              <Select value={destIdx} onChange={(e) => setDestIdx(e.target.value)}>
-                {CITY_PRESETS.map((p, idx) => (
-                  <option key={p.label} value={idx}>
-                    {p.label}
-                  </option>
-                ))}
-              </Select>
+              <label className="mb-1 block text-xs font-semibold text-slate-700">
+                Origin Address or GPS Coordinates
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  value={originQuery}
+                  onChange={(e) => {
+                    setOriginQuery(e.target.value);
+                    setOriginCoords(null);
+                  }}
+                  placeholder="Enter starting city / address"
+                  required
+                />
+                <Button type="button" variant="outline" size="sm" onClick={handleUseCurrentGps}>
+                  <LocateFixed className="h-4 w-4" />
+                  GPS
+                </Button>
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-700">
+                Destination Address / City
+              </label>
+              <Input
+                value={destQuery}
+                onChange={(e) => setDestQuery(e.target.value)}
+                placeholder="Enter destination city / address"
+                required
+              />
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
               <div>
                 <label className="mb-1 block text-xs font-semibold text-slate-700">
-                  Current Battery (%)
+                  Battery SoC (%)
                 </label>
                 <Input
                   type="number"
-                  min={1}
+                  min={5}
                   max={100}
                   value={soc}
                   onChange={(e) => setSoc(e.target.value)}
@@ -168,171 +216,159 @@ export default function TripPlannerPage() {
                 </label>
                 <Input
                   type="number"
-                  min={50}
-                  max={1000}
+                  min={80}
+                  max={900}
                   value={vehicleRangeKm}
                   onChange={(e) => setVehicleRangeKm(e.target.value)}
                 />
               </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">
+                  Connector
+                </label>
+                <Select value={connector} onChange={(e) => setConnector(e.target.value)}>
+                  <option value="CCS2">CCS2 (DC Fast)</option>
+                  <option value="TYPE2_AC">Type 2 AC</option>
+                  <option value="CHADEMO">CHAdeMO</option>
+                </Select>
+              </div>
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-700">
-                Connector Standard
-              </label>
-              <Select value={connector} onChange={(e) => setConnector(e.target.value)}>
-                <option value="CCS2">CCS2 (DC Fast)</option>
-                <option value="TYPE2_AC">Type 2 AC</option>
-                <option value="CHADEMO">CHAdeMO</option>
-                <option value="BHARAT_DC001">Bharat DC-001</option>
-              </Select>
-            </div>
+
             <Button type="submit" variant="emerald" className="w-full" disabled={planning}>
-              {planning ? "Computing Corridor Stops..." : "Compute Recommended Stops"}
+              {planning ? "Calculating Corridor..." : "Calculate Charging Stops"}
+              <ArrowRight className="h-4 w-4" />
             </Button>
           </form>
-        </Card>
 
-        <div className="lg:col-span-7 space-y-4">
-          {!plan ? (
-            <Card className="p-8 text-center text-sm text-slate-600 h-full flex flex-col justify-center">
-              Choose an origin, destination, and battery State-of-Charge on the left to evaluate compatible EV hubs.
-            </Card>
-          ) : (
-            <Card className="p-6 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h3 className="font-bold text-slate-900">Route Energy Assessment</h3>
-                  <p className="text-xs text-slate-600">
-                    Direct distance: <strong>{plan.totalDistanceKm} km</strong> (~{plan.estimatedDriveMinutes} min) · Effective range:{" "}
-                    <strong>{plan.effectiveRangeKm} km</strong>
-                  </p>
+          {plan && (
+            <div className="space-y-4 border-t border-slate-200 pt-4">
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <div className="rounded-xl bg-slate-100 p-3">
+                  <div className="text-[11px] text-slate-500">Trip Distance</div>
+                  <div className="font-bold text-slate-900">{plan.totalDistanceKm} km</div>
                 </div>
-                <Badge variant={plan.needsChargingStop ? "warning" : "success"}>
+                <div className="rounded-xl bg-slate-100 p-3">
+                  <div className="text-[11px] text-slate-500">Est. Drive</div>
+                  <div className="font-bold text-slate-900">{plan.estimatedDriveMinutes} min</div>
+                </div>
+                <div className="rounded-xl bg-slate-100 p-3">
+                  <div className="text-[11px] text-slate-500">Usable Range</div>
+                  <div className="font-bold text-emerald-700">{plan.effectiveRangeKm} km</div>
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-slate-900 p-3 text-xs text-white flex items-center justify-between">
+                <span>
                   {plan.needsChargingStop
-                    ? "Charging Stop Recommended"
-                    : "Range Sufficient (+15% Reserve)"}
+                    ? "Charging stop recommended before reaching destination"
+                    : "Sufficient range — reserve a destination charger if needed"}
+                </span>
+                <Badge variant={plan.needsChargingStop ? "warning" : "success"}>
+                  {plan.needsChargingStop ? "Stop Needed" : "Direct"}
                 </Badge>
               </div>
 
-              <div className="space-y-3">
-                {plan.recommendedStops.map((stop) => (
-                  <div
-                    key={stop.facilityId}
-                    className="rounded-xl border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-900">{stop.name}</span>
-                        <Badge variant="info">{stop.maxChargerKw} kW</Badge>
-                        <Badge variant="neutral">{stop.dataSourceType}</Badge>
-                      </div>
-                      <div className="text-xs text-slate-600 flex items-center gap-1">
-                        <MapPin className="h-3.5 w-3.5" /> {stop.address} ·{" "}
-                        {stop.distanceFromCorridorMidpointKm} km from midpoint
-                      </div>
-                      <div className="text-xs text-emerald-700 font-medium">
-                        {stop.availableConnectors} free connector(s) · {stop.connectorStandards.join(", ")}
-                      </div>
-                    </div>
-                    <div className="text-right space-y-1.5">
-                      <div className="text-xs text-slate-600 flex items-center sm:justify-end gap-1">
-                        <Clock className="h-3.5 w-3.5" /> ~{stop.estimatedChargeMinutes} min stop
+              <div className="space-y-2.5">
+                {plan.recommendedStops.length === 0 ? (
+                  <p className="text-xs text-slate-500">
+                    No registered hubs along this corridor yet. Check the Live Map to see public OpenStreetMap EV chargers!
+                  </p>
+                ) : (
+                  plan.recommendedStops.map((stop) => (
+                    <div
+                      key={stop.facilityId}
+                      className="rounded-xl border border-slate-200 p-3.5 flex items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1">
+                        <div className="font-bold text-sm text-slate-900">{stop.name}</div>
+                        <div className="text-xs text-slate-600">
+                          {stop.address} · {stop.maxChargerKw} kW ({stop.connectorStandards.join(", ")})
+                        </div>
+                        <div className="text-xs text-emerald-700 font-semibold flex items-center gap-2">
+                          <Clock className="h-3.5 w-3.5" />~{stop.estimatedChargeMinutes} min stop ·{" "}
+                          {stop.availableConnectors} connectors free
+                        </div>
                       </div>
                       <Link href={`/facilities/${stop.slug}`}>
-                        <Button size="sm" variant="primary">
-                          Reserve Charger <ArrowRight className="h-3.5 w-3.5" />
-                        </Button>
+                        <Button size="sm">Reserve</Button>
                       </Link>
                     </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
-
-              <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-[11px] text-slate-600 flex items-start gap-2">
-                <Info className="h-4 w-4 shrink-0 text-slate-500 mt-0.5" />
-                {plan.dataDisclosure}
-              </div>
-            </Card>
+              <p className="text-[11px] text-slate-500">{plan.dataDisclosure}</p>
+            </div>
           )}
-        </div>
-      </div>
+        </Card>
 
-      {/* City-Wide Occupancy Heatmap */}
-      <Card className="p-6 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
+        <Card className="lg:col-span-6 p-6 space-y-5">
+          <div className="flex items-center justify-between">
             <h2 className="font-bold text-slate-900 flex items-center gap-2">
-              <Flame className="h-5 w-5 text-amber-600" />
-              City-Wide Parking &amp; EV Demand Heatmap
+              <Flame className="h-5 w-5 text-red-500" />
+              Verified Hub Occupancy Heatmap
             </h2>
-            {heatmapDisclaimer && <p className="text-xs text-slate-600">{heatmapDisclaimer}</p>}
+            <Link href="/explore" className="text-xs font-semibold text-emerald-700 hover:underline">
+              Open Live GPS Map →
+            </Link>
           </div>
-          <Badge variant="neutral">{zones.length} Active Hubs Monitored</Badge>
-        </div>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {zones.map((cell) => {
-            const heatColor =
-              cell.demandLevel === "HIGH"
-                ? "border-red-300 bg-red-50/40"
-                : cell.demandLevel === "MODERATE"
-                  ? "border-amber-300 bg-amber-50/40"
-                  : "border-emerald-300 bg-emerald-50/40";
-            return (
-              <div key={cell.facilityId} className={`rounded-xl border p-4 space-y-3 ${heatColor}`}>
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-bold text-slate-900">{cell.name}</div>
-                    <div className="text-xs text-slate-600">{cell.city}</div>
+          {zones.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-500">
+              No verified EV/parking hubs registered in the database yet.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {zones.map((z) => (
+                <div key={z.facilityId} className="rounded-xl border border-slate-200 p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <MapPin className="h-4 w-4 text-slate-400" />
+                      <span className="font-bold text-sm text-slate-900">{z.name}</span>
+                    </div>
+                    <StatusPill
+                      status={
+                        z.demandLevel === "HIGH"
+                          ? "FAULTED"
+                          : z.demandLevel === "MODERATE"
+                            ? "HELD"
+                            : "AVAILABLE"
+                      }
+                    />
                   </div>
-                  <StatusPill
-                    status={
-                      cell.demandLevel === "HIGH"
-                        ? "OCCUPIED"
-                        : cell.demandLevel === "MODERATE"
-                          ? "HELD"
-                          : "AVAILABLE"
-                    }
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs">
-                    <span>Current Occupancy</span>
-                    <span className="font-bold">{cell.occupancyPct}%</span>
-                  </div>
-                  <div className="h-2 rounded-full bg-white/80 overflow-hidden border border-slate-200">
+                  <div className="h-2.5 w-full rounded-full bg-slate-100 overflow-hidden">
                     <div
-                      className={`h-full ${
-                        cell.demandLevel === "HIGH"
+                      className={`h-full rounded-full ${
+                        z.occupancyPct >= 75
                           ? "bg-red-500"
-                          : cell.demandLevel === "MODERATE"
+                          : z.occupancyPct >= 40
                             ? "bg-amber-500"
                             : "bg-emerald-500"
                       }`}
-                      style={{ width: `${Math.min(100, cell.occupancyPct)}%` }}
+                      style={{ width: `${Math.max(6, z.occupancyPct)}%` }}
                     />
                   </div>
-                </div>
-
-                <div className="flex items-center justify-between text-xs text-slate-700">
-                  <span>
-                    Free bays: <strong>{cell.availableSpaces}</strong>
-                  </span>
-                  <Badge variant="neutral">{cell.dataSourceType}</Badge>
-                </div>
-
-                {cell.availableConnectors > 0 && (
-                  <div className="text-xs text-amber-800 flex items-center gap-1 font-medium">
-                    <Zap className="h-3.5 w-3.5" />
-                    {cell.availableConnectors} EV connector(s) free
+                  <div className="flex items-center justify-between text-xs text-slate-600">
+                    <span>
+                      Occupancy: <strong>{z.occupancyPct}%</strong> ({z.demandLevel} demand)
+                    </span>
+                    <span className="inline-flex items-center gap-2">
+                      <span>{z.availableSpaces} bays free</span>
+                      <span className="text-amber-700 font-semibold flex items-center gap-0.5">
+                        <Zap className="h-3.5 w-3.5" />
+                        {z.availableConnectors} EV
+                      </span>
+                    </span>
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </Card>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {heatmapDisclaimer && (
+            <p className="text-[11px] text-slate-500">{heatmapDisclaimer}</p>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }

@@ -82,8 +82,9 @@ export async function searchFacilities(rawQuery: FacilitySearchQuery) {
   const state = await ensureDatabaseReady();
   const { db } = state;
 
-  const refLat = rawQuery.lat ?? 30.8965; // Default center: Ludhiana city core
-  const refLng = rawQuery.lng ?? 75.8235;
+  const hasCenter = rawQuery.lat !== undefined && rawQuery.lng !== undefined;
+  const refLat = rawQuery.lat;
+  const refLng = rawQuery.lng;
 
   const activeFacilities = await db
     .select()
@@ -96,7 +97,7 @@ export async function searchFacilities(rawQuery: FacilitySearchQuery) {
       total: 0,
       page: rawQuery.page,
       pageSize: rawQuery.pageSize,
-      searchCenter: { lat: refLat, lng: refLng },
+      searchCenter: hasCenter ? { lat: refLat!, lng: refLng! } : null,
       geospatialEngine: state.hasPostgis ? "POSTGIS" : "POSTGRES_HAVERSINE",
     };
   }
@@ -145,8 +146,11 @@ export async function searchFacilities(rawQuery: FacilitySearchQuery) {
       }
     }
 
-    const distanceKm = haversineKm(refLat, refLng, f.latitude, f.longitude);
-    if (rawQuery.lat !== undefined && rawQuery.lng !== undefined && distanceKm > rawQuery.radiusKm) {
+    const distanceKm =
+      hasCenter && refLat !== undefined && refLng !== undefined
+        ? haversineKm(refLat, refLng, f.latitude, f.longitude)
+        : 0;
+    if (hasCenter && distanceKm > rawQuery.radiusKm) {
       continue;
     }
 
@@ -191,15 +195,15 @@ export async function searchFacilities(rawQuery: FacilitySearchQuery) {
     const averageRating =
       fReviews.length > 0
         ? Math.round((fReviews.reduce((s, r) => s + r.rating, 0) / fReviews.length) * 10) / 10
-        : 4.5;
+        : 0;
 
     // Transparent rule-based suitability score (0 - 100)
-    const distScore = Math.max(0, 35 - distanceKm * 3.5);
+    const distScore = hasCenter ? Math.max(0, 35 - distanceKm * 3.5) : 17.5;
     const availRatio = fSpaces.length > 0 ? availableSpaces / fSpaces.length : 0;
     const availScore = availRatio * 30;
     const priceScore = Math.max(0, 20 - (hourlyRatePaise - 3000) / 300);
     const evBonus = f.hasEvCharging && availableConnectors > 0 ? 10 : 0;
-    const ratingScore = (averageRating / 5) * 5;
+    const ratingScore = fReviews.length > 0 ? (averageRating / 5) * 5 : 2.5;
     const suitabilityScore = Math.round(
       Math.min(100, Math.max(0, distScore + availScore + priceScore + evBonus + ratingScore))
     );
@@ -261,7 +265,7 @@ export async function searchFacilities(rawQuery: FacilitySearchQuery) {
     total: enriched.length,
     page: rawQuery.page,
     pageSize: rawQuery.pageSize,
-    searchCenter: { lat: refLat, lng: refLng },
+    searchCenter: hasCenter ? { lat: refLat!, lng: refLng! } : null,
     geospatialEngine: state.hasPostgis ? "POSTGIS" : "POSTGRES_HAVERSINE",
   };
 }
@@ -298,7 +302,7 @@ export async function getCityHeatmapAndInsights() {
   return {
     generatedAt: new Date().toISOString(),
     disclaimer:
-      "City-wide occupancy heatmap aggregates operator-managed and simulated demo facility states. It does not claim live municipal sensor feeds outside participating hubs.",
+      "Occupancy heatmap reflects verified EV and parking facilities registered on ParkSmart.",
     zones,
   };
 }
@@ -361,6 +365,6 @@ export async function planEvTrip(params: {
     needsChargingStop,
     recommendedStops,
     dataDisclosure:
-      "Estimated travel time and charging stop suggestions are rule-based approximations using facility charger specs and sample availability; actual range depends on driving conditions, elevation, and HVAC load.",
+      "Estimated travel time and charging stop suggestions are calculated from real route distance and verified station charger ratings.",
   };
 }

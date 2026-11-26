@@ -474,76 +474,99 @@ export default function EvPumpsDashboardPage() {
               </Card>
             </div>
 
-            {/* 2-Column Analytics Row: Smooth Blue Area Chart + Circular Donut Gauge */}
+            {/* 2-Column Analytics Row: Real Data Occupancy Chart + Circular Donut Gauge */}
             {activeNav === "overview" && (
               <div className="grid gap-5 lg:grid-cols-12">
                 <Card className="lg:col-span-8 p-5 bg-white border-slate-200/80 shadow-xs space-y-4">
                   <div className="flex items-center justify-between">
                     <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
                       <BarChart3 className="h-4 w-4 text-blue-600" />
-                      Charger Occupancy &amp; Load Trend
+                      Charger Activity (Last 24 Hours)
                     </h2>
                     <span className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
-                      Last 24 Hours
+                      Real DB Events
                     </span>
                   </div>
 
-                  <svg viewBox="0 0 520 180" className="w-full h-44" aria-label="24 hour occupancy chart">
-                    <defs>
-                      <linearGradient id="evAreaGrad" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.24" />
-                        <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.02" />
-                      </linearGradient>
-                    </defs>
-                    {/* Horizontal grid */}
-                    {[30, 65, 100, 135].map((y) => (
-                      <line
-                        key={y}
-                        x1="36"
-                        y1={y}
-                        x2="500"
-                        y2={y}
-                        stroke="#E2E8F0"
-                        strokeDasharray="3 3"
-                      />
-                    ))}
-                    <text x="8" y="34" fontSize="10" fill="#94A3B8">100%</text>
-                    <text x="14" y="69" fontSize="10" fill="#94A3B8">75%</text>
-                    <text x="14" y="104" fontSize="10" fill="#94A3B8">50%</text>
-                    <text x="14" y="139" fontSize="10" fill="#94A3B8">25%</text>
-                    <path
-                      d="M 45 128 C 110 72, 165 56, 220 62 C 280 70, 340 44, 405 66 C 450 82, 480 96, 495 110 L 495 148 L 45 148 Z"
-                      fill="url(#evAreaGrad)"
-                    />
-                    <path
-                      d="M 45 128 C 110 72, 165 56, 220 62 C 280 70, 340 44, 405 66 C 450 82, 480 96, 495 110"
-                      fill="none"
-                      stroke="#2563EB"
-                      strokeWidth="3"
-                    />
-                    {[
-                      [45, 128],
-                      [135, 70],
-                      [225, 62],
-                      [315, 55],
-                      [405, 66],
-                      [495, 110],
-                    ].map(([cx, cy], idx) => (
-                      <circle
-                        key={idx}
-                        cx={cx}
-                        cy={cy}
-                        r="4"
-                        fill="#FFFFFF"
-                        stroke="#2563EB"
-                        strokeWidth="2.5"
-                      />
-                    ))}
-                    <text x="40" y="168" fontSize="10" fill="#64748B">6AM</text>
-                    <text x="180" y="168" fontSize="10" fill="#64748B">12PM</text>
-                    <text x="330" y="168" fontSize="10" fill="#64748B">6PM</text>
-                    <text x="468" y="168" fontSize="10" fill="#64748B">12AM</text>
-                  </svg>
+                  {(() => {
+                    const buckets = [0, 0, 0, 0, 0, 0];
+                    const labels = ["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"];
+                    const nowMs = Date.now();
+                    for (const ord of data.preOrders) {
+                      const t = new Date(ord.startTime).getTime();
+                      if (Math.abs(nowMs - t) <= 24 * 3600_000) {
+                        const hr = new Date(ord.startTime).getHours();
+                        buckets[Math.min(5, Math.floor(hr / 4))]! += 1;
+                      }
+                    }
+                    for (const ses of data.chargingSessions) {
+                      const t = new Date(ses.startedAt).getTime();
+                      if (nowMs - t <= 24 * 3600_000) {
+                        const hr = new Date(ses.startedAt).getHours();
+                        buckets[Math.min(5, Math.floor(hr / 4))]! += 1;
+                      }
+                    }
+                    const maxBucket = Math.max(1, ...buckets);
+                    const pts = buckets.map((val, idx) => ({
+                      x: 45 + idx * 90,
+                      y: Math.round(145 - (val / maxBucket) * 105),
+                      val,
+                      label: labels[idx]!,
+                    }));
+                    const polyline = pts.map((p) => `${p.x},${p.y}`).join(" ");
+                    const areaPath = `M ${pts[0]!.x},148 L ${pts.map((p) => `${p.x},${p.y}`).join(" L ")} L ${pts[pts.length - 1]!.x},148 Z`;
+
+                    return (
+                      <div className="space-y-1">
+                        <svg viewBox="0 0 520 180" className="w-full h-44" aria-label="24 hour activity chart">
+                          <defs>
+                            <linearGradient id="evAreaGrad" x1="0" x2="0" y1="0" y2="1">
+                              <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.24" />
+                              <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.02" />
+                            </linearGradient>
+                          </defs>
+                          {[40, 75, 110, 145].map((y) => (
+                            <line
+                              key={y}
+                              x1="36"
+                              y1={y}
+                              x2="500"
+                              y2={y}
+                              stroke="#E2E8F0"
+                              strokeDasharray="3 3"
+                            />
+                          ))}
+                          <path d={areaPath} fill="url(#evAreaGrad)" />
+                          <polyline
+                            fill="none"
+                            stroke="#2563EB"
+                            strokeWidth="3"
+                            points={polyline}
+                          />
+                          {pts.map((p) => (
+                            <g key={p.label}>
+                              <circle
+                                cx={p.x}
+                                cy={p.y}
+                                r="4"
+                                fill="#FFFFFF"
+                                stroke="#2563EB"
+                                strokeWidth="2.5"
+                              />
+                              <text x={p.x - 12} y="168" fontSize="10" fill="#64748B">
+                                {p.label}
+                              </text>
+                            </g>
+                          ))}
+                        </svg>
+                        {buckets.every((b) => b === 0) && (
+                          <p className="text-[11px] text-slate-500 text-center">
+                            No charging sessions or pre-orders recorded in the last 24 hours yet.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </Card>
 
                 <Card className="lg:col-span-4 p-5 bg-white border-slate-200/80 shadow-xs flex flex-col items-center justify-between text-center">

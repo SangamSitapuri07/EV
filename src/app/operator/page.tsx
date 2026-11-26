@@ -99,7 +99,11 @@ export default function OperatorDashboardPage() {
   // New facility onboarding state
   const [newName, setNewName] = useState("");
   const [newAddr, setNewAddr] = useState("");
-  const [newCity, setNewCity] = useState("Ludhiana");
+  const [newCity, setNewCity] = useState("");
+  const [newState, setNewState] = useState("");
+  const [newPostal, setNewPostal] = useState("");
+  const [newLat, setNewLat] = useState("");
+  const [newLng, setNewLng] = useState("");
   const [newType, setNewType] = useState("MULTI_LEVEL_GARAGE");
   const [newHourlyInr, setNewHourlyInr] = useState("50");
   const [newEv, setNewEv] = useState(true);
@@ -217,19 +221,25 @@ export default function OperatorDashboardPage() {
 
   async function handleCreateFacility(e: React.FormEvent) {
     e.preventDefault();
+    const latNum = Number(newLat);
+    const lngNum = Number(newLng);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+      setError("Provide valid latitude and longitude (or click Use Current GPS).");
+      return;
+    }
     const res = await fetch("/api/v1/operator/facilities", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: newName,
-        description: `${newName} managed smart parking and mobility facility in ${newCity}.`,
+        description: `${newName} managed smart parking and EV charging facility in ${newCity}.`,
         facilityType: newType,
         addressLine1: newAddr,
         city: newCity,
-        state: "Punjab",
-        postalCode: "141001",
-        latitude: 30.892,
-        longitude: 75.829,
+        state: newState,
+        postalCode: newPostal,
+        latitude: latNum,
+        longitude: lngNum,
         hasEvCharging: newEv,
         hourlyRatePaise: Number(newHourlyInr) * 100,
         dailyMaxPaise: Number(newHourlyInr) * 600,
@@ -240,6 +250,11 @@ export default function OperatorDashboardPage() {
     if (json.ok) {
       setNewName("");
       setNewAddr("");
+      setNewCity("");
+      setNewState("");
+      setNewPostal("");
+      setNewLat("");
+      setNewLng("");
       setMessage(
         `Facility "${json.data.facility.name}" submitted (${json.data.facility.status}).`
       );
@@ -381,70 +396,88 @@ export default function OperatorDashboardPage() {
               </Card>
             </div>
 
-            {/* 2-Column Analytics Row: Occupancy Trend + Charger Energy Status */}
+            {/* 2-Column Analytics Row: Real Booking Activity + Charger Energy Status */}
             <div className="grid gap-5 lg:grid-cols-12">
               <Card className="lg:col-span-8 p-5 bg-white border-slate-200/80 shadow-xs space-y-4">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-extrabold text-slate-900">Occupancy Trend</h2>
+                  <h2 className="text-sm font-extrabold text-slate-900">
+                    Booking &amp; Occupancy Activity
+                  </h2>
                   <span className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
-                    Last 24 Hours
+                    Last 24 Hours (Real DB)
                   </span>
                 </div>
-                <svg viewBox="0 0 520 180" className="w-full h-44" aria-label="Occupancy trend">
-                  <defs>
-                    <linearGradient id="opAreaGrad" x1="0" x2="0" y1="0" y2="1">
-                      <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.24" />
-                      <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.02" />
-                    </linearGradient>
-                  </defs>
-                  {[30, 65, 100, 135].map((y) => (
-                    <line
-                      key={y}
-                      x1="36"
-                      y1={y}
-                      x2="500"
-                      y2={y}
-                      stroke="#E2E8F0"
-                      strokeDasharray="3 3"
-                    />
-                  ))}
-                  <text x="8" y="34" fontSize="10" fill="#94A3B8">100%</text>
-                  <text x="14" y="69" fontSize="10" fill="#94A3B8">75%</text>
-                  <text x="14" y="104" fontSize="10" fill="#94A3B8">50%</text>
-                  <text x="14" y="139" fontSize="10" fill="#94A3B8">25%</text>
-                  <path
-                    d="M 45 130 C 110 74, 165 52, 220 64 C 280 72, 340 42, 405 68 C 450 85, 480 96, 495 112 L 495 148 L 45 148 Z"
-                    fill="url(#opAreaGrad)"
-                  />
-                  <path
-                    d="M 45 130 C 110 74, 165 52, 220 64 C 280 72, 340 42, 405 68 C 450 85, 480 96, 495 112"
-                    fill="none"
-                    stroke="#2563EB"
-                    strokeWidth="3"
-                  />
-                  {[
-                    [45, 130],
-                    [135, 68],
-                    [225, 64],
-                    [315, 54],
-                    [405, 68],
-                    [495, 112],
-                  ].map(([cx, cy], idx) => (
-                    <circle
-                      key={idx}
-                      cx={cx}
-                      cy={cy}
-                      r="4"
-                      fill="#FFFFFF"
-                      stroke="#2563EB"
-                      strokeWidth="2.5"
-                    />
-                  ))}
-                  <text x="40" y="168" fontSize="10" fill="#64748B">6AM</text>
-                  <text x="180" y="168" fontSize="10" fill="#64748B">12PM</text>
-                  <text x="330" y="168" fontSize="10" fill="#64748B">6PM</text>
-                  <text x="468" y="168" fontSize="10" fill="#64748B">12AM</text>
-                </svg>
+                {(() => {
+                  const buckets = [0, 0, 0, 0, 0, 0];
+                  const labels = ["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"];
+                  const nowMs = Date.now();
+                  for (const r of data.reservations) {
+                    const t = new Date(r.startTime).getTime();
+                    if (Math.abs(nowMs - t) <= 24 * 3600_000) {
+                      const hr = new Date(r.startTime).getHours();
+                      buckets[Math.min(5, Math.floor(hr / 4))]! += 1;
+                    }
+                  }
+                  const maxB = Math.max(1, ...buckets);
+                  const pts = buckets.map((val, idx) => ({
+                    x: 45 + idx * 90,
+                    y: Math.round(145 - (val / maxB) * 105),
+                    label: labels[idx]!,
+                  }));
+                  const polyline = pts.map((p) => `${p.x},${p.y}`).join(" ");
+                  const areaPath = `M ${pts[0]!.x},148 L ${pts.map((p) => `${p.x},${p.y}`).join(" L ")} L ${pts[pts.length - 1]!.x},148 Z`;
+
+                  return (
+                    <div className="space-y-1">
+                      <svg viewBox="0 0 520 180" className="w-full h-44" aria-label="Occupancy trend">
+                        <defs>
+                          <linearGradient id="opAreaGrad" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.24" />
+                            <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.02" />
+                          </linearGradient>
+                        </defs>
+                        {[40, 75, 110, 145].map((y) => (
+                          <line
+                            key={y}
+                            x1="36"
+                            y1={y}
+                            x2="500"
+                            y2={y}
+                            stroke="#E2E8F0"
+                            strokeDasharray="3 3"
+                          />
+                        ))}
+                        <path d={areaPath} fill="url(#opAreaGrad)" />
+                        <polyline
+                          fill="none"
+                          stroke="#2563EB"
+                          strokeWidth="3"
+                          points={polyline}
+                        />
+                        {pts.map((p) => (
+                          <g key={p.label}>
+                            <circle
+                              cx={p.x}
+                              cy={p.y}
+                              r="4"
+                              fill="#FFFFFF"
+                              stroke="#2563EB"
+                              strokeWidth="2.5"
+                            />
+                            <text x={p.x - 12} y="168" fontSize="10" fill="#64748B">
+                              {p.label}
+                            </text>
+                          </g>
+                        ))}
+                      </svg>
+                      {buckets.every((b) => b === 0) && (
+                        <p className="text-[11px] text-slate-500 text-center">
+                          No bookings recorded in the last 24 hours yet.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </Card>
 
               <Card className="lg:col-span-4 p-5 bg-white border-slate-200/80 shadow-xs flex flex-col items-center justify-between text-center">
@@ -701,7 +734,7 @@ export default function OperatorDashboardPage() {
               placeholder="Street Address"
               required
             />
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <Input
                 value={newCity}
                 onChange={(e) => setNewCity(e.target.value)}
@@ -709,13 +742,56 @@ export default function OperatorDashboardPage() {
                 required
               />
               <Input
-                type="number"
-                value={newHourlyInr}
-                onChange={(e) => setNewHourlyInr(e.target.value)}
-                placeholder="Hourly ₹"
+                value={newState}
+                onChange={(e) => setNewState(e.target.value)}
+                placeholder="State"
+                required
+              />
+              <Input
+                value={newPostal}
+                onChange={(e) => setNewPostal(e.target.value)}
+                placeholder="Postal Code"
                 required
               />
             </div>
+            <div className="grid grid-cols-3 gap-2 items-center">
+              <Input
+                type="number"
+                step="any"
+                value={newLat}
+                onChange={(e) => setNewLat(e.target.value)}
+                placeholder="Latitude"
+                required
+              />
+              <Input
+                type="number"
+                step="any"
+                value={newLng}
+                onChange={(e) => setNewLng(e.target.value)}
+                placeholder="Longitude"
+                required
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  navigator.geolocation?.getCurrentPosition((pos) => {
+                    setNewLat(pos.coords.latitude.toFixed(6));
+                    setNewLng(pos.coords.longitude.toFixed(6));
+                  });
+                }}
+              >
+                Use GPS
+              </Button>
+            </div>
+            <Input
+              type="number"
+              value={newHourlyInr}
+              onChange={(e) => setNewHourlyInr(e.target.value)}
+              placeholder="Hourly ₹"
+              required
+            />
             <Select value={newType} onChange={(e) => setNewType(e.target.value)}>
               <option value="MULTI_LEVEL_GARAGE">Multi-Level Garage</option>
               <option value="DEDICATED_EV_HUB">Dedicated EV Hub</option>

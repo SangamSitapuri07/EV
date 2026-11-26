@@ -71,12 +71,13 @@ export function InteractiveCityMap({
     void import("leaflet").then((L) => {
       if (cancelled || !el || mapRef.current) return;
 
-      const centerLat = userLocation?.lat ?? facilities[0]?.latitude ?? 30.8965;
-      const centerLng = userLocation?.lng ?? facilities[0]?.longitude ?? 75.8235;
+      const centerLat = userLocation?.lat ?? facilities[0]?.latitude ?? 20.5937;
+      const centerLng = userLocation?.lng ?? facilities[0]?.longitude ?? 78.9629;
+      const initialZoom = userLocation || facilities[0] ? 13 : 5;
 
       const map = L.map(el, {
         center: [centerLat, centerLng],
-        zoom: 13,
+        zoom: initialZoom,
         zoomControl: false,
         attributionControl: true,
       });
@@ -201,10 +202,7 @@ export function InteractiveCityMap({
 
   function handleSearchCurrentArea() {
     const map = mapRef.current;
-    if (!map) {
-      onSearchBounds({ north: 31.0, south: 30.8, east: 76.0, west: 75.7 });
-      return;
-    }
+    if (!map) return;
     const b = map.getBounds();
     onSearchBounds({
       north: b.getNorth(),
@@ -293,7 +291,9 @@ export function InteractiveCityMap({
                   </div>
                   <div className="flex items-center gap-1 text-[11px] text-amber-600 font-semibold">
                     <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
-                    {selectedFacility.averageRating} ({selectedFacility.reviewCount})
+                    {selectedFacility.reviewCount > 0
+                      ? `${selectedFacility.averageRating} (${selectedFacility.reviewCount})`
+                      : "New listing"}
                   </div>
                   <div className="text-[11px] text-slate-600">
                     <strong className="text-slate-900">

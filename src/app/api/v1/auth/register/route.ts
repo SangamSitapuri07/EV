@@ -130,7 +130,7 @@ export async function POST(req: Request) {
 
       await tx.insert(userProfiles).values({
         userId: u.id,
-        preferredCity: body.ownerVerification?.siteCity || "Ludhiana",
+        preferredCity: body.ownerVerification?.siteCity || "",
       });
 
       if (body.role === "PARKING_OPERATOR" || body.role === "EV_OPERATOR") {
@@ -144,7 +144,7 @@ export async function POST(req: Request) {
             gstNumber: verif.gstinNumber || null,
             operatorType: body.role === "EV_OPERATOR" ? "EV_CHARGING" : "PARKING",
             contactEmail: body.email,
-            contactPhone: body.phone || "+91-98000-00000",
+            contactPhone: body.phone || "",
             status: "PENDING_VERIFICATION",
           })
           .returning();

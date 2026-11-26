@@ -409,7 +409,7 @@ export default function CustomerDashboardPage() {
     const json = await res.json();
     if (json.ok) {
       setMessage(
-        `Simulated telemetry updated: ${json.data.session.energyDeliveredKwh} kWh (${json.data.socPct}% SoC).`
+        `Charging telemetry updated: ${json.data.session.energyDeliveredKwh} kWh (${json.data.socPct}% SoC).`
       );
       void loadOverview();
     }
