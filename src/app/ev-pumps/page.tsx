@@ -101,6 +101,14 @@ export default function EvPumpsDashboardPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [liveConnected, setLiveConnected] = useState(false);
   const [activeNav, setActiveNav] = useState<"overview" | "pumps" | "queue">("overview");
+  const [ownerVerif, setOwnerVerif] = useState<{
+    verificationStatus: string;
+    ownerName: string;
+    panNumber: string;
+    gstinNumber: string | null;
+    electricityConsumerNo: string;
+    chargerSerialNumber: string;
+  } | null>(null);
 
   const [orderFilter, setOrderFilter] = useState<"ALL" | "UPCOMING" | "ACTIVE" | "COMPLETED">(
     "ALL"
@@ -116,11 +124,14 @@ export default function EvPumpsDashboardPage() {
   const loadData = useCallback(async () => {
     setError(null);
     try {
-      const res = await fetch("/api/v1/ev-pumps/dashboard");
+      const [res, verifRes] = await Promise.all([
+        fetch("/api/v1/ev-pumps/dashboard"),
+        fetch("/api/v1/operator/verification"),
+      ]);
       const json = await res.json();
       if (res.status === 401 || res.status === 403) {
         setError(
-          "EV Pumps Operator access required. Sign in as EV Charging Operator (ev.op@smartmobility.test) to manage pumps & pre-orders."
+          "EV Pumps Owner access required. Sign in as a verified EV Owner to manage pumps & pre-orders."
         );
         return;
       }
@@ -129,6 +140,12 @@ export default function EvPumpsDashboardPage() {
         return;
       }
       setData(json.data);
+      if (verifRes.ok) {
+        const verifJson = await verifRes.json();
+        if (verifJson.ok && verifJson.data?.verification) {
+          setOwnerVerif(verifJson.data.verification);
+        }
+      }
       if (!targetFacId && json.data.facilities.length > 0) {
         setTargetFacId(json.data.facilities[0].id);
       }
@@ -377,6 +394,37 @@ export default function EvPumpsDashboardPage() {
               </div>
             )}
 
+            {/* EV Owner Security Verification Status */}
+            {ownerVerif ? (
+              <Card className="p-4 bg-white border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="text-xs space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-slate-900">
+                      EV Owner Verification: {ownerVerif.ownerName}
+                    </span>
+                    <StatusPill status={ownerVerif.verificationStatus} />
+                  </div>
+                  <div className="text-slate-600">
+                    PAN: <span className="font-mono">{ownerVerif.panNumber}</span> · Electricity
+                    Consumer No.: <span className="font-mono">{ownerVerif.electricityConsumerNo}</span>{" "}
+                    · Charger Serial:{" "}
+                    <span className="font-mono">{ownerVerif.chargerSerialNumber}</span>
+                  </div>
+                </div>
+              </Card>
+            ) : (
+              <Card className="p-4 bg-amber-50/70 border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="text-xs text-amber-900">
+                  <strong>Owner Verification Status:</strong> Complete Owner PAN/GSTIN, Location/Electricity Proof &amp; Charger Serial verification to activate new stations.
+                </div>
+                <Link href="/register?role=EV_OPERATOR">
+                  <Button size="sm" variant="primary">
+                    Submit Verification Docs
+                  </Button>
+                </Link>
+              </Card>
+            )}
+
             {/* 4 Clean KPI Cards (Matches Screen 5 in Reference Picture) */}
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <Card className="p-4 bg-white border-slate-200/80 shadow-xs space-y-1.5">
@@ -552,7 +600,7 @@ export default function EvPumpsDashboardPage() {
                         <div>
                           <div className="flex items-center gap-2">
                             <h3 className="font-bold text-slate-900">{pump.stationName}</h3>
-                            {pump.isSimulated && <Badge variant="warning">Simulated OCPP</Badge>}
+                            <Badge variant="info">{pump.networkProvider}</Badge>
                           </div>
                           <div className="text-xs text-slate-600">
                             {pump.facilityName} · {pump.facilityCity} ·{" "}

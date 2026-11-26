@@ -65,23 +65,48 @@ export default async function LandingPage() {
                     id="hero-q"
                     name="q"
                     type="text"
-                    placeholder="Search location (e.g. Sarabha Nagar)"
+                    placeholder="Enter area, landmark, or city"
                     className="w-full bg-transparent text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none"
                   />
                 </div>
 
-                <div className="md:col-span-3 px-3 py-1.5 border-b md:border-b-0 md:border-r border-slate-200">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                    Arrive
-                  </div>
-                  <div className="text-xs font-semibold text-slate-800">Today, 10:00 AM</div>
+                <div className="md:col-span-3 px-3 py-1 border-b md:border-b-0 md:border-r border-slate-200">
+                  <label
+                    htmlFor="hero-ev"
+                    className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400"
+                  >
+                    Service Type
+                  </label>
+                  <select
+                    id="hero-ev"
+                    name="hasEvCharging"
+                    defaultValue="true"
+                    className="w-full bg-transparent text-xs font-semibold text-slate-800 focus:outline-none"
+                  >
+                    <option value="true">EV Charging Stations</option>
+                    <option value="">Parking &amp; EV Hubs</option>
+                    <option value="false">Parking Only</option>
+                  </select>
                 </div>
 
-                <div className="md:col-span-2 px-3 py-1.5">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                    Depart
-                  </div>
-                  <div className="text-xs font-semibold text-slate-800">Today, 12:00 PM</div>
+                <div className="md:col-span-2 px-3 py-1">
+                  <label
+                    htmlFor="hero-conn"
+                    className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400"
+                  >
+                    Connector
+                  </label>
+                  <select
+                    id="hero-conn"
+                    name="connectorStandard"
+                    defaultValue=""
+                    className="w-full bg-transparent text-xs font-semibold text-slate-800 focus:outline-none"
+                  >
+                    <option value="">Any Type</option>
+                    <option value="CCS2">CCS2 Fast</option>
+                    <option value="TYPE2_AC">Type 2 AC</option>
+                    <option value="CHADEMO">CHAdeMO</option>
+                  </select>
                 </div>
 
                 <div className="md:col-span-2">
@@ -102,28 +127,28 @@ export default async function LandingPage() {
                 className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-[#0F2942]/80 px-4 py-2.5 text-xs font-semibold text-white backdrop-blur hover:bg-[#173A5E] transition"
               >
                 <MapPin className="h-4 w-4 text-emerald-400" />
-                Nearby Parking
+                EV Chargers Near Me
               </Link>
               <Link
                 href="/dashboard"
                 className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-[#0F2942]/80 px-4 py-2.5 text-xs font-semibold text-white backdrop-blur hover:bg-[#173A5E] transition"
               >
                 <Zap className="h-4 w-4 text-emerald-400" />
-                EV Charging Pre-Order
+                Pre-Order EV Slot
               </Link>
               <Link
                 href="/explore"
                 className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-[#0F2942]/80 px-4 py-2.5 text-xs font-semibold text-white backdrop-blur hover:bg-[#173A5E] transition"
               >
                 <Compass className="h-4 w-4 text-sky-400" />
-                Find on Map
+                Live City Map
               </Link>
               <Link
-                href="/ev-pumps"
+                href="/register?role=EV_OPERATOR"
                 className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-[#0F2942]/80 px-4 py-2.5 text-xs font-semibold text-white backdrop-blur hover:bg-[#173A5E] transition"
               >
                 <CalendarCheck className="h-4 w-4 text-amber-300" />
-                EV Pumps Console
+                Register EV Station
               </Link>
             </div>
           </div>

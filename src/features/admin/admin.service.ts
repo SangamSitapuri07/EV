@@ -2,6 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { ensureDatabaseReady } from "@/db";
 import {
   auditLogs,
+  evOwnerVerifications,
   facilities,
   notifications,
   operators,
@@ -24,6 +25,7 @@ export async function getAdminOverview() {
   const [
     userRows,
     operatorRows,
+    ownerVerifRows,
     facilityRows,
     reservationRows,
     paymentRows,
@@ -45,6 +47,7 @@ export async function getAdminOverview() {
       .from(users)
       .orderBy(desc(users.createdAt)),
     db.select().from(operators).orderBy(desc(operators.createdAt)),
+    db.select().from(evOwnerVerifications).orderBy(desc(evOwnerVerifications.createdAt)),
     db.select().from(facilities).orderBy(desc(facilities.createdAt)),
     db.select().from(reservations).orderBy(desc(reservations.createdAt)).limit(50),
     db.select().from(payments).orderBy(desc(payments.createdAt)).limit(50),
@@ -96,6 +99,7 @@ export async function getAdminOverview() {
     },
     users: userRows,
     operators: operatorRows,
+    ownerVerifications: ownerVerifRows,
     facilities: facilityRows,
     reservations: reservationRows,
     payments: paymentRows,
@@ -189,6 +193,17 @@ export async function reviewOperatorStatus(params: {
     })
     .where(eq(operators.id, op.id))
     .returning();
+
+  await db
+    .update(evOwnerVerifications)
+    .set({
+      verificationStatus: params.status === "APPROVED" ? "APPROVED" : "REJECTED",
+      reviewedByUserId: params.admin.id,
+      reviewNotes: params.notes ?? null,
+      reviewedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(evOwnerVerifications.operatorId, op.id));
 
   await writeAuditLog({
     actorUserId: params.admin.id,

@@ -11,7 +11,6 @@ import {
   CheckCircle2,
   AlertCircle,
   BarChart3,
-  Radio,
 } from "lucide-react";
 import {
   Badge,
@@ -216,16 +215,6 @@ export default function OperatorDashboardPage() {
     }
   }
 
-  async function handleSimulatePulse() {
-    if (!selectedFacId) return;
-    const res = await fetch(`/api/v1/availability/${selectedFacId}`, { method: "POST" });
-    const json = await res.json();
-    if (json.ok) {
-      setMessage(`Simulated availability pulse: ${json.data.updatedCount} spaces updated.`);
-      loadData();
-    }
-  }
-
   async function handleCreateFacility(e: React.FormEvent) {
     e.preventDefault();
     const res = await fetch("/api/v1/operator/facilities", {
@@ -343,10 +332,12 @@ export default function OperatorDashboardPage() {
                   Manage your facilities and monitor performance
                 </p>
               </div>
-              <Button variant="outline" size="sm" onClick={handleSimulatePulse}>
-                <Radio className="h-4 w-4 text-emerald-600" />
-                Trigger Demo Sensor Pulse
-              </Button>
+              <Link href="/ev-pumps">
+                <Button variant="primary" size="sm">
+                  <Zap className="h-4 w-4" />
+                  Open EV Pumps Dashboard
+                </Button>
+              </Link>
             </div>
 
             {message && (

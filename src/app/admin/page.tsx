@@ -57,6 +57,26 @@ interface AdminDashboardData {
     status: string;
     gstNumber: string | null;
   }>;
+  ownerVerifications: Array<{
+    id: string;
+    operatorId: string;
+    ownerName: string;
+    businessType: string;
+    panNumber: string;
+    gstinNumber: string | null;
+    siteAddress: string;
+    siteCity: string;
+    ownershipType: string;
+    electricityBoard: string;
+    electricityConsumerNo: string;
+    sanctionedLoadKw: number;
+    chargerManufacturer: string;
+    chargerModel: string;
+    chargerSerialNumber: string;
+    connectorType: string;
+    complianceStandard: string;
+    verificationStatus: string;
+  }>;
   settings: Array<{
     key: string;
     value: {
@@ -190,6 +210,24 @@ export default function AdminDashboardPage() {
       loadData();
     } else {
       setError(json.error?.message || "Failed to resolve ticket");
+    }
+  }
+
+  async function handleOperatorReview(
+    operatorId: string,
+    status: "APPROVED" | "REJECTED"
+  ) {
+    const res = await fetch(`/api/v1/admin/operators/${operatorId}/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    const json = await res.json();
+    if (json.ok) {
+      setMessage(`EV Owner verification marked ${status}.`);
+      void loadData();
+    } else {
+      setError(json.error?.message || "Failed to review EV owner");
     }
   }
 
@@ -353,6 +391,80 @@ export default function AdminDashboardPage() {
           </table>
         </div>
       </Card>
+
+      {/* EV Owner 3-Step Verification Review */}
+      {data.ownerVerifications && data.ownerVerifications.length > 0 && (
+        <Card className="p-5 space-y-4">
+          <h2 className="font-bold text-slate-900 flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-emerald-600" />
+            EV Owner Security Verifications ({data.ownerVerifications.length})
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500">
+                  <th className="py-2">Owner &amp; PAN/GSTIN</th>
+                  <th className="py-2">Location &amp; Electricity</th>
+                  <th className="py-2">Charger &amp; Serial</th>
+                  <th className="py-2">Status</th>
+                  <th className="py-2 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {data.ownerVerifications.map((v) => (
+                  <tr key={v.id}>
+                    <td className="py-2.5">
+                      <div className="font-semibold text-slate-900">{v.ownerName}</div>
+                      <div className="text-slate-500 font-mono">
+                        PAN: {v.panNumber} {v.gstinNumber ? `· GST: ${v.gstinNumber}` : ""}
+                      </div>
+                    </td>
+                    <td className="py-2.5">
+                      <div>
+                        {v.siteAddress}, {v.siteCity} ({v.ownershipType})
+                      </div>
+                      <div className="text-slate-500">
+                        {v.electricityBoard} · {v.electricityConsumerNo} ({v.sanctionedLoadKw}kW)
+                      </div>
+                    </td>
+                    <td className="py-2.5">
+                      <div>
+                        {v.chargerManufacturer} {v.chargerModel} ({v.connectorType})
+                      </div>
+                      <div className="text-slate-500 font-mono">
+                        S/N: {v.chargerSerialNumber} · {v.complianceStandard}
+                      </div>
+                    </td>
+                    <td className="py-2.5">
+                      <StatusPill status={v.verificationStatus} />
+                    </td>
+                    <td className="py-2.5 text-right space-x-1.5">
+                      {v.verificationStatus !== "APPROVED" && (
+                        <Button
+                          size="sm"
+                          variant="emerald"
+                          onClick={() => handleOperatorReview(v.operatorId, "APPROVED")}
+                        >
+                          Approve
+                        </Button>
+                      )}
+                      {v.verificationStatus !== "REJECTED" && (
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          onClick={() => handleOperatorReview(v.operatorId, "REJECTED")}
+                        >
+                          Reject
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* Policy Settings + Support Tickets */}
       <div className="grid gap-6 lg:grid-cols-12">

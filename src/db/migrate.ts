@@ -16,6 +16,13 @@ async function runMigrations() {
   await state.rawExec(oauthSql);
   console.log("[migrate] Applied 0003_oauth_accounts.sql");
 
+  const verifSql = fs.readFileSync(
+    path.join(migrationsDir, "0004_ev_owner_verifications.sql"),
+    "utf-8"
+  );
+  await state.rawExec(verifSql);
+  console.log("[migrate] Applied 0004_ev_owner_verifications.sql");
+
   if (state.mode === "postgres" && process.env.ENABLE_POSTGIS === "true") {
     const postgisSql = fs.readFileSync(path.join(migrationsDir, "0002_postgis_prod.sql"), "utf-8");
     await state.rawExec(postgisSql);

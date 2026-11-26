@@ -138,6 +138,20 @@ export async function ensureDatabaseReady(): Promise<DbState> {
       const oauthSql = fs.readFileSync(oauthPath, "utf-8");
       await state.rawExec(oauthSql);
     }
+    const verifRows = await state.rawQuery<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = 'ev_owner_verifications'
+       ) AS exists`
+    );
+    if (!verifRows[0]?.exists) {
+      const verifPath = path.resolve(
+        process.cwd(),
+        "src/db/migrations/0004_ev_owner_verifications.sql"
+      );
+      const verifSql = fs.readFileSync(verifPath, "utf-8");
+      await state.rawExec(verifSql);
+    }
     const { seedIfEmpty } = await import("./seed-data");
     await seedIfEmpty(state.db);
     globalForDb.__smartMobilitySeeded = true;

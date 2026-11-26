@@ -247,6 +247,64 @@ export const operators = pgTable(
   (t) => [index("operators_owner_idx").on(t.ownerUserId)]
 );
 
+export const evOwnerVerifications = pgTable(
+  "ev_owner_verifications",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    operatorId: uuid("operator_id")
+      .notNull()
+      .unique()
+      .references(() => operators.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+
+    // 1. Owner verification
+    ownerName: varchar("owner_name", { length: 160 }).notNull(),
+    businessType: varchar("business_type", { length: 40 }).notNull(),
+    panNumber: varchar("pan_number", { length: 16 }).notNull(),
+    gstinNumber: varchar("gstin_number", { length: 20 }),
+    businessDocName: varchar("business_doc_name", { length: 255 }).notNull(),
+    businessDocRef: text("business_doc_ref").notNull(),
+
+    // 2. Location & ownership proof
+    siteAddress: text("site_address").notNull(),
+    siteCity: varchar("site_city", { length: 120 }).notNull(),
+    ownershipType: varchar("ownership_type", { length: 40 }).notNull(),
+    propertyDocName: varchar("property_doc_name", { length: 255 }).notNull(),
+    propertyDocRef: text("property_doc_ref").notNull(),
+    nocDocName: varchar("noc_doc_name", { length: 255 }).notNull(),
+    nocDocRef: text("noc_doc_ref").notNull(),
+    electricityBoard: varchar("electricity_board", { length: 160 }).notNull(),
+    electricityConsumerNo: varchar("electricity_consumer_no", { length: 80 }).notNull(),
+    sanctionedLoadKw: doublePrecision("sanctioned_load_kw").notNull(),
+
+    // 3. Charger verification
+    chargerManufacturer: varchar("charger_manufacturer", { length: 120 }).notNull(),
+    chargerModel: varchar("charger_model", { length: 120 }).notNull(),
+    chargerSerialNumber: varchar("charger_serial_number", { length: 120 }).notNull(),
+    connectorType: connectorStandardEnum("connector_type").notNull().default("CCS2"),
+    complianceStandard: varchar("compliance_standard", { length: 160 }).notNull(),
+    chargerDocName: varchar("charger_doc_name", { length: 255 }).notNull(),
+    chargerDocRef: text("charger_doc_ref").notNull(),
+
+    verificationStatus: varchar("verification_status", { length: 32 })
+      .notNull()
+      .default("PENDING"),
+    reviewNotes: text("review_notes"),
+    reviewedByUserId: uuid("reviewed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("ev_owner_verif_user_idx").on(t.userId),
+    index("ev_owner_verif_status_idx").on(t.verificationStatus),
+  ]
+);
+
 export const operatorStaff = pgTable(
   "operator_staff",
   {

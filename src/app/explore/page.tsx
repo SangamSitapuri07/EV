@@ -10,11 +10,16 @@ import {
   AlertCircle,
   Scale,
   X,
+  LocateFixed,
+  ExternalLink,
 } from "lucide-react";
 import type { FacilitySearchResultItem } from "@/features/search/search.service";
-import { InteractiveCityMap } from "@/components/map/interactive-city-map";
+import {
+  InteractiveCityMap,
+  type NearbyOsmStation,
+} from "@/components/map/interactive-city-map";
 import { Badge, Button, Card, Select, Skeleton } from "@/components/ui/primitives";
-import { formatPaise, getFacilityPhoto } from "@/lib/utils";
+import { formatPaise, getFacilityPhoto, haversineKm } from "@/lib/utils";
 
 function ExploreContent() {
   const searchParams = useSearchParams();
@@ -35,13 +40,113 @@ function ExploreContent() {
     west: number;
   } | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [locationStatus, setLocationStatus] = useState<
+    "idle" | "prompting" | "granted" | "denied"
+  >("idle");
 
   const [facilities, setFacilities] = useState<FacilitySearchResultItem[]>([]);
+  const [osmStations, setOsmStations] = useState<NearbyOsmStation[]>([]);
+  const [loadingOsm, setLoadingOsm] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sseConnected, setSseConnected] = useState(false);
+
+  const fetchNearbyOsmChargers = useCallback(
+    async (lat: number, lng: number, km: number) => {
+      setLoadingOsm(true);
+      try {
+        const radiusMeters = Math.min(25000, Math.max(3000, Math.round(km * 1000)));
+        const overpassQuery = `[out:json][timeout:8];(node["amenity"="charging_station"](around:${radiusMeters},${lat},${lng});way["amenity"="charging_station"](around:${radiusMeters},${lat},${lng}););out center 25;`;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 7000);
+        const res = await fetch("https://overpass-api.de/api/interpreter", {
+          method: "POST",
+          body: overpassQuery,
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (!res.ok) return;
+        const json = (await res.json()) as {
+          elements?: Array<{
+            id: number;
+            lat?: number;
+            lon?: number;
+            center?: { lat: number; lon: number };
+            tags?: Record<string, string>;
+          }>;
+        };
+        const items: NearbyOsmStation[] = (json.elements ?? [])
+          .map((el) => {
+            const pLat = el.lat ?? el.center?.lat;
+            const pLng = el.lon ?? el.center?.lon;
+            if (pLat === undefined || pLng === undefined) return null;
+            const tags = el.tags ?? {};
+            const socketList = Object.entries(tags)
+              .filter(([k]) => k.startsWith("socket:"))
+              .map(([k, v]) => `${k.replace("socket:", "").toUpperCase()} (${v})`)
+              .join(", ");
+            return {
+              id: `osm-${el.id}`,
+              name: tags.name || tags.operator || "Public EV Charging Station",
+              operator: tags.operator,
+              latitude: pLat,
+              longitude: pLng,
+              distanceKm: haversineKm(lat, lng, pLat, pLng),
+              sockets: socketList || tags.capacity ? `Sockets: ${socketList || tags.capacity}` : undefined,
+            };
+          })
+          .filter((x): x is NonNullable<typeof x> => x !== null)
+          .sort((a, b) => a.distanceKm - b.distanceKm)
+          .slice(0, 15);
+        setOsmStations(items);
+      } catch {
+        // Gracefully ignore Overpass offline/timeout in restricted networks
+      } finally {
+        setLoadingOsm(false);
+      }
+    },
+    []
+  );
+
+  const requestUserLocation = useCallback(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setLocationStatus("denied");
+      return;
+    }
+    setLocationStatus("prompting");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        };
+        setUserLocation(coords);
+        setLocationStatus("granted");
+        setError(null);
+        void fetchNearbyOsmChargers(coords.lat, coords.lng, Number(radiusKm) || 15);
+      },
+      () => {
+        setLocationStatus("denied");
+        setError(
+          "Location access was declined. Allow location in your browser to see EV charging stations right around you."
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }, [fetchNearbyOsmChargers, radiusKm]);
+
+  // Ask for live location when user opens Explore Map
+  useEffect(() => {
+    if (typeof window === "undefined" || navigator.userAgent.includes("jsdom")) return;
+    const timer = setTimeout(() => {
+      requestUserLocation();
+    }, 200);
+    return () => clearTimeout(timer);
+    // Only prompt automatically once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fetchFacilities = useCallback(async () => {
     setLoading(true);
@@ -57,8 +162,9 @@ function ExploreContent() {
       }
       if (isCovered) params.set("isCovered", isCovered);
       if (hasAccessibility) params.set("hasAccessibility", hasAccessibility);
-      params.set("sortBy", "suitability");
-      params.set("radiusKm", radiusKm);
+      params.set("sortBy", userLocation ? "distance" : "suitability");
+      // When user shares real location far from seeded hubs, expand radius so they also see closest bookable hubs
+      params.set("radiusKm", userLocation ? "500" : radiusKm);
 
       if (userLocation) {
         params.set("lat", String(userLocation.lat));
@@ -127,24 +233,6 @@ function ExploreContent() {
     return () => es.close();
   }, [fetchFacilities]);
 
-  function handleLocateUser() {
-    if (!navigator.geolocation) {
-      setError("Geolocation is not supported by your browser.");
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setUserLocation({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-        });
-      },
-      () => {
-        setError("Location permission declined — showing city center.");
-      }
-    );
-  }
-
   function clearAllFilters() {
     setQ("");
     setHasEvCharging("");
@@ -171,15 +259,45 @@ function ExploreContent() {
 
   return (
     <div className="bg-[#F4F7FB] min-h-screen">
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 space-y-4">
+        {/* Location Permission Banner */}
+        <Card className="p-3.5 bg-white border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-xs text-slate-700">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-600 shrink-0">
+              <LocateFixed className="h-4 w-4" />
+            </span>
+            <div>
+              {locationStatus === "granted" && userLocation ? (
+                <span>
+                  <strong className="text-slate-900">Live GPS Active:</strong> Showing EV charging points near{" "}
+                  <span className="font-mono">
+                    {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
+                  </span>{" "}
+                  ({osmStations.length} public OSM chargers + {facilities.length} ParkSmart hubs)
+                </span>
+              ) : locationStatus === "prompting" ? (
+                <span>Requesting your GPS location to find nearby EV charging points...</span>
+              ) : (
+                <span>
+                  <strong className="text-slate-900">Find Nearby EV Chargers:</strong> Share your current location to plot EV charging points around you on the live map.
+                </span>
+              )}
+            </div>
+          </div>
+
+          <Button size="sm" variant="primary" onClick={requestUserLocation}>
+            <LocateFixed className="h-3.5 w-3.5" />
+            {locationStatus === "granted" ? "Refresh My Location" : "Allow Location & Find Chargers"}
+          </Button>
+        </Card>
+
         {error && (
-          <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+          <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
             <AlertCircle className="h-4 w-4 shrink-0" />
             {error}
           </div>
         )}
 
-        {/* Screen 2 Layout: Left Filter Sidebar + Right Map & 3-Column Facility Cards */}
         <div className="grid gap-6 lg:grid-cols-12 items-start">
           {/* Left Filter Sidebar */}
           <Card className="lg:col-span-3 p-5 space-y-5 bg-white border-slate-200/80 shadow-sm">
@@ -194,7 +312,6 @@ function ExploreContent() {
               </button>
             </div>
 
-            {/* Price Range Slider */}
             <div className="space-y-2 border-t border-slate-100 pt-4">
               <div className="text-xs font-bold text-slate-800">Price Range</div>
               <div className="text-xs font-semibold text-slate-600">
@@ -212,12 +329,9 @@ function ExploreContent() {
               />
             </div>
 
-            {/* Distance Slider */}
             <div className="space-y-2 border-t border-slate-100 pt-4">
               <div className="text-xs font-bold text-slate-800">Distance</div>
-              <div className="text-xs font-semibold text-slate-600">
-                Within {radiusKm} km
-              </div>
+              <div className="text-xs font-semibold text-slate-600">Within {radiusKm} km</div>
               <input
                 type="range"
                 min={2}
@@ -230,7 +344,6 @@ function ExploreContent() {
               />
             </div>
 
-            {/* Availability Checkboxes */}
             <div className="space-y-2.5 border-t border-slate-100 pt-4">
               <div className="text-xs font-bold text-slate-800">Availability</div>
               <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
@@ -259,7 +372,6 @@ function ExploreContent() {
               </label>
             </div>
 
-            {/* Connector Type */}
             <div className="space-y-2 border-t border-slate-100 pt-4">
               <div className="text-xs font-bold text-slate-800">Connector Type</div>
               {[
@@ -274,9 +386,7 @@ function ExploreContent() {
                   <input
                     type="checkbox"
                     checked={connectorStandard === c.val}
-                    onChange={(e) =>
-                      setConnectorStandard(e.target.checked ? c.val : "")
-                    }
+                    onChange={(e) => setConnectorStandard(e.target.checked ? c.val : "")}
                     className="rounded border-slate-300"
                   />
                   {c.label}
@@ -284,7 +394,6 @@ function ExploreContent() {
               ))}
             </div>
 
-            {/* Charging Power */}
             <div className="space-y-2 border-t border-slate-100 pt-4">
               <div className="text-xs font-bold text-slate-800">Charging Power</div>
               <Select
@@ -299,7 +408,6 @@ function ExploreContent() {
               </Select>
             </div>
 
-            {/* Facilities */}
             <div className="space-y-2 border-t border-slate-100 pt-4">
               <div className="text-xs font-bold text-slate-800">Facilities</div>
               <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
@@ -330,17 +438,60 @@ function ExploreContent() {
             </div>
           </Card>
 
-          {/* Right Main Area: Map on top + 3-Card Facility Grid Below */}
+          {/* Right Main Area */}
           <div className="lg:col-span-9 space-y-6">
             <InteractiveCityMap
               facilities={facilities}
+              osmStations={osmStations}
               selectedId={selectedId}
               onSelectFacility={setSelectedId}
               userLocation={userLocation}
               onSearchBounds={(b) => setBounds(b)}
-              onLocateUser={handleLocateUser}
+              onLocateUser={requestUserLocation}
             />
 
+            {/* Nearby Live OpenStreetMap EV Charging Points (when user location is shared) */}
+            {(osmStations.length > 0 || loadingOsm) && (
+              <Card className="p-4 bg-white border-slate-200/80 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                    <Zap className="h-4 w-4 text-teal-600" />
+                    EV Charging Points Near Your Location ({osmStations.length})
+                  </h2>
+                  {loadingOsm && <span className="text-xs text-slate-500">Scanning area...</span>}
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {osmStations.slice(0, 6).map((s) => (
+                    <div
+                      key={s.id}
+                      onClick={() => setSelectedId(s.id)}
+                      className={`rounded-xl border p-3 text-xs space-y-1 cursor-pointer transition ${
+                        selectedId === s.id
+                          ? "border-teal-600 bg-teal-50/50"
+                          : "border-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="font-bold text-slate-900 truncate">{s.name}</div>
+                      <div className="text-slate-600">
+                        {s.distanceKm} km away {s.operator ? `· ${s.operator}` : ""}
+                      </div>
+                      {s.sockets && <div className="text-[11px] text-slate-500">{s.sockets}</div>}
+                      <a
+                        href={`https://www.google.com/maps/dir/?api=1&destination=${s.latitude},${s.longitude}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline"
+                      >
+                        Directions <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            {/* ParkSmart Verified Bookable Facilities */}
             {loading ? (
               <div className="grid gap-4 md:grid-cols-3">
                 {[1, 2, 3].map((i) => (
@@ -432,7 +583,6 @@ function ExploreContent() {
               </div>
             )}
 
-            {/* Optional Side-by-Side Comparison Matrix */}
             {comparedFacilities.length > 0 && (
               <Card className="p-5 space-y-3">
                 <div className="flex items-center justify-between">

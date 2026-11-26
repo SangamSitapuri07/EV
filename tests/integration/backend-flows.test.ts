@@ -24,6 +24,7 @@ import {
   listEvPumpsWithAvailability,
 } from "@/features/charging/charging.service";
 import { getEvPumpsDashboardData } from "@/features/operator/operator.service";
+import { POST as registerRoute } from "@/app/api/v1/auth/register/route";
 import { assertFacilityAccess } from "@/lib/permissions";
 import { reviewFacilityApproval } from "@/features/admin/admin.service";
 import { updateParkingSpaceStatus } from "@/features/availability/availability.service";
@@ -353,5 +354,66 @@ describe("Integration: RBAC, Concurrency, Payments, Webhooks & EV Charging", () 
 
     // Cleanup hold
     await cancelReservation(customer, hold.reservation.id, "Cleanup EV pump pre-order test");
+  });
+
+  it("enforces 3-step Owner, Location/Electricity, and Charger verification on EV Owner registration", async () => {
+    const missingRes = await registerRoute(
+      new Request("http://localhost:3000/api/v1/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: `unverified-ev-${Date.now()}@example.com`,
+          password: "Password@123",
+          fullName: "Rajesh Kumar",
+          role: "EV_OPERATOR",
+        }),
+      })
+    );
+    expect(missingRes.status).toBe(400);
+
+    const uniqueEmail = `verified-ev-${Date.now()}@example.com`;
+    const validRes = await registerRoute(
+      new Request("http://localhost:3000/api/v1/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: uniqueEmail,
+          password: "Password@123",
+          fullName: "Rajesh Kumar",
+          phone: "+91-98140-55555",
+          role: "EV_OPERATOR",
+          businessName: "RK EV Charge Point",
+          ownerVerification: {
+            ownerName: "Rajesh Kumar",
+            businessType: "PROPRIETORSHIP",
+            panNumber: "ABCDE1234F",
+            gstinNumber: "03ABCDE1234F1Z5",
+            businessDocName: "pan_gst.pdf",
+            businessDocRef: "file://pan_gst.pdf",
+            siteAddress: "Plot 22, Model Town Extension",
+            siteCity: "Ludhiana",
+            ownershipType: "LEASED",
+            propertyDocName: "lease_agreement.pdf",
+            propertyDocRef: "file://lease_agreement.pdf",
+            nocDocName: "fire_noc.pdf",
+            nocDocRef: "file://fire_noc.pdf",
+            electricityBoard: "PSPCL",
+            electricityConsumerNo: "CA-88990011",
+            sanctionedLoadKw: 120,
+            chargerManufacturer: "Exicom",
+            chargerModel: "Harmony Gen 2 60kW",
+            chargerSerialNumber: "EX-60KW-2026-0091",
+            connectorType: "CCS2",
+            complianceStandard: "ARAI / AIS-138",
+            chargerDocName: "arai_cert.pdf",
+            chargerDocRef: "file://arai_cert.pdf",
+          },
+        }),
+      })
+    );
+    expect(validRes.status).toBe(201);
+    const body = await validRes.json();
+    expect(body.ok).toBe(true);
+    expect(body.data.user.role).toBe("EV_OPERATOR");
   });
 });

@@ -928,12 +928,12 @@ export default function CustomerDashboardPage() {
                       </div>
                       <div>
                         <label className="mb-1 block text-xs font-semibold text-slate-700">
-                          Promo Code (try EVFIRST10)
+                          Promo Code (optional)
                         </label>
                         <Input
                           value={promoCode}
                           onChange={(e) => setPromoCode(e.target.value)}
-                          placeholder="EVFIRST10"
+                          placeholder="Enter promo code"
                         />
                       </div>
                       <div className="rounded-xl bg-white border border-slate-200 p-3 text-xs space-y-1">
@@ -976,7 +976,7 @@ export default function CustomerDashboardPage() {
                       >
                         {bookingBusy
                           ? "Locking Slot & Confirming..."
-                          : "Confirm EV Pump Pre-Order (Sandbox)"}
+                          : "Confirm EV Pump Pre-Order"}
                       </Button>
                     </div>
                   </Card>
@@ -996,7 +996,7 @@ export default function CustomerDashboardPage() {
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
                               <h3 className="font-bold text-slate-900">{pump.stationName}</h3>
-                              {pump.isSimulated && <Badge variant="warning">Simulated OCPP</Badge>}
+                              <Badge variant="info">{pump.networkProvider}</Badge>
                             </div>
                             <div className="text-xs text-slate-600 flex items-center gap-1 mt-0.5">
                               <MapPin className="h-3.5 w-3.5" />
@@ -1134,7 +1134,6 @@ export default function CustomerDashboardPage() {
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <StatusPill status={s.status} />
-                          {s.isSimulated && <Badge variant="warning">Simulated OCPP</Badge>}
                           <span className="font-mono text-xs text-slate-500">
                             {s.externalSessionRef}
                           </span>
@@ -1154,7 +1153,7 @@ export default function CustomerDashboardPage() {
                             onClick={() => handleTickCharging(s.id)}
                           >
                             <Play className="h-3.5 w-3.5 text-emerald-600" />
-                            +4.5 kWh
+                            Refresh Telemetry
                           </Button>
                           <Button
                             size="sm"

@@ -1,10 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import QRCode from "qrcode";
 import {
-  MapPin,
   Clock,
   Zap,
   Car,
@@ -366,13 +365,44 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
   const fac = initial.facility;
   const gallery = getFacilityGallery(fac.slug, fac.photos);
   const [activePhoto, setActivePhoto] = useState(gallery[0]!);
+  const miniMapRef = useRef<HTMLDivElement | null>(null);
   const baseRule = initial.pricingRules[0];
   const avgRating =
     initial.reviews.length > 0
       ? (
           initial.reviews.reduce((s, r) => s + r.rating, 0) / initial.reviews.length
         ).toFixed(1)
-      : "4.8";
+      : "—";
+
+  useEffect(() => {
+    const el = miniMapRef.current;
+    if (!el || typeof window === "undefined" || navigator.userAgent.includes("jsdom")) return;
+    let mapInstance: import("leaflet").Map | null = null;
+    let cancelled = false;
+    void import("leaflet").then((L) => {
+      if (cancelled || !el) return;
+      mapInstance = L.map(el, {
+        center: [fac.latitude, fac.longitude],
+        zoom: 15,
+        zoomControl: false,
+        attributionControl: false,
+      });
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+      }).addTo(mapInstance);
+      const pin = L.divIcon({
+        className: "parksmart-detail-pin",
+        html: `<div style="width:28px;height:28px;border-radius:9999px;background:#EF4444;border:3px solid #fff;box-shadow:0 3px 10px rgba(0,0,0,0.35);"></div>`,
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
+      });
+      L.marker([fac.latitude, fac.longitude], { icon: pin }).addTo(mapInstance);
+    });
+    return () => {
+      cancelled = true;
+      mapInstance?.remove();
+    };
+  }, [fac.latitude, fac.longitude]);
 
   return (
     <div className="bg-[#F4F7FB] min-h-screen">
@@ -385,7 +415,7 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
           Back to Search
         </Link>
 
-        {/* Screen 3 Hero Card: Left Photo Gallery + Details, Right Mini Map + Book a Slot */}
+        {/* Screen 3 Hero Card: Left Photo Gallery + Details, Right Real Map + Book a Slot */}
         <div className="grid gap-6 lg:grid-cols-12 items-start">
           <Card className="lg:col-span-8 p-5 space-y-5 bg-white border-slate-200/80 shadow-sm">
             {/* Main Photo + 4 Thumbnails */}
@@ -421,16 +451,14 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
             <div className="space-y-2 border-b border-slate-100 pb-4">
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-2xl font-extrabold text-slate-900">{fac.name}</h1>
-                <Badge variant={fac.dataSourceType === "SIMULATED" ? "warning" : "info"}>
-                  {fac.dataSourceType.replace("_", " ")}
-                </Badge>
+                <Badge variant="info">{fac.facilityType.replace(/_/g, " ")}</Badge>
               </div>
               <div className="flex items-center gap-2 text-xs text-slate-600">
                 <span className="inline-flex items-center gap-1 font-bold text-slate-900">
                   <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
                   {avgRating}
                 </span>
-                <span>({Math.max(initial.reviews.length, 124)} reviews)</span>
+                <span>({initial.reviews.length} reviews)</span>
                 <span>· {fac.addressLine1}, {fac.city}</span>
               </div>
               <div className="flex flex-wrap items-center gap-3 pt-1">
@@ -486,23 +514,12 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
             </div>
           </Card>
 
-          {/* Right Mini Location Map & Book a Slot / Get Directions Card */}
+          {/* Right Real Mini Location Map & Book a Slot / Get Directions Card */}
           <Card className="lg:col-span-4 p-4 space-y-4 bg-white border-slate-200/80 shadow-sm">
-            <div className="relative h-60 w-full overflow-hidden rounded-xl border border-slate-200 bg-[#EEF3F8]">
-              <svg viewBox="0 0 400 300" className="h-full w-full" aria-hidden="true">
-                <rect width="400" height="300" fill="#EDF2F7" />
-                <rect x="30" y="30" width="90" height="70" rx="12" fill="#D4ECDD" />
-                <rect x="260" y="180" width="110" height="80" rx="12" fill="#D4ECDD" />
-                <path d="M 0 140 Q 200 160 400 110" stroke="#FFFFFF" strokeWidth="10" fill="none" />
-                <path d="M 180 0 L 210 300" stroke="#FFFFFF" strokeWidth="9" fill="none" />
-                <path d="M 0 220 L 400 240" stroke="#FFFFFF" strokeWidth="7" fill="none" />
-              </svg>
-              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-full flex flex-col items-center">
-                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-red-500 text-white shadow-md ring-4 ring-red-500/20">
-                  <MapPin className="h-5 w-5" />
-                </span>
-              </div>
-            </div>
+            <div
+              ref={miniMapRef}
+              className="relative h-60 w-full overflow-hidden rounded-xl border border-slate-200 bg-[#EEF3F8]"
+            />
 
             <a href="#slot-booking" className="block">
               <button
@@ -633,7 +650,7 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
               <div className="flex items-center justify-between">
                 <h2 className="font-bold text-slate-900 flex items-center gap-2">
                   <BatteryCharging className="h-4 w-4 text-amber-600" />
-                  3. EV Charging Connectors (Optional · Simulated OCPP)
+                  3. EV Charging Connectors (Optional)
                 </h2>
                 {selectedConnectorId && (
                   <button
@@ -807,7 +824,7 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
               <div className="space-y-4 text-center">
                 <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-800">
                   <CheckCircle2 className="h-4 w-4" />
-                  Booking Confirmed &amp; Paid (Sandbox)
+                  Booking Confirmed &amp; Paid
                 </div>
                 <div className="text-xl font-bold text-slate-900">
                   Ref: {reservation.bookingReference}
@@ -821,7 +838,7 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
                 )}
                 {qrRawToken && (
                   <div className="rounded-lg bg-slate-100 p-2 text-[10px] font-mono text-slate-700 break-all">
-                    Signed QR Token (for Operator Gate Scan test): {qrRawToken}
+                    Signed Gate QR Token: {qrRawToken}
                   </div>
                 )}
                 <div className="flex gap-2">
@@ -851,7 +868,7 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
                   </div>
                   <p>
                     Hold expires at {new Date(reservation.holdExpiresAt).toLocaleTimeString()}.
-                    Complete sandbox payment to issue your signed gate QR pass.
+                    Complete payment verification to issue your signed gate QR pass.
                   </p>
                 </div>
 
@@ -876,14 +893,14 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
                   onClick={handleSandboxPayment}
                 >
                   <CreditCard className="h-4 w-4" />
-                  {busy ? "Verifying HMAC Signature..." : "Complete Sandbox Payment & Verify"}
+                  {busy ? "Verifying Payment..." : "Complete Payment & Confirm Slot"}
                 </Button>
               </div>
             ) : (
               <>
                 <div>
                   <label htmlFor="promo" className="mb-1 block text-xs font-semibold text-slate-700">
-                    Promo Code (Try EVFIRST10 or CLEAN20)
+                    Promo Code (optional)
                   </label>
                   <div className="flex gap-2">
                     <Input

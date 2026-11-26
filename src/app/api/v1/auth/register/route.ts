@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { ensureDatabaseReady } from "@/db";
-import { operators, userProfiles, users } from "@/db/schema";
+import { evOwnerVerifications, operators, userProfiles, users } from "@/db/schema";
 import { AppError, created, handleApiError } from "@/lib/api-response";
 import { writeAuditLog } from "@/lib/audit";
 import {
@@ -12,6 +12,60 @@ import {
 } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/utils";
 
+export const evOwnerVerificationSchema = z.object({
+  // 1. Owner verification
+  ownerName: z.string().trim().min(2).max(160),
+  businessType: z.enum([
+    "INDIVIDUAL",
+    "PROPRIETORSHIP",
+    "PARTNERSHIP",
+    "LLP",
+    "PRIVATE_LIMITED",
+  ]),
+  panNumber: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, "Valid 10-character PAN required (e.g. ABCDE1234F)"),
+  gstinNumber: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/, "Invalid 15-character GSTIN")
+    .optional()
+    .or(z.literal("")),
+  businessDocName: z.string().trim().min(2).max(255),
+  businessDocRef: z.string().trim().min(3).max(2000),
+
+  // 2. Location & ownership proof
+  siteAddress: z.string().trim().min(5).max(500),
+  siteCity: z.string().trim().min(2).max(120),
+  ownershipType: z.enum(["OWNED", "LEASED", "AUTHORIZED"]),
+  propertyDocName: z.string().trim().min(2).max(255),
+  propertyDocRef: z.string().trim().min(3).max(2000),
+  nocDocName: z.string().trim().min(2).max(255),
+  nocDocRef: z.string().trim().min(3).max(2000),
+  electricityBoard: z.string().trim().min(2).max(160),
+  electricityConsumerNo: z.string().trim().min(4).max(80),
+  sanctionedLoadKw: z.coerce.number().min(3).max(2000),
+
+  // 3. Charger verification
+  chargerManufacturer: z.string().trim().min(2).max(120),
+  chargerModel: z.string().trim().min(1).max(120),
+  chargerSerialNumber: z.string().trim().min(3).max(120),
+  connectorType: z.enum([
+    "CCS2",
+    "TYPE2_AC",
+    "CHADEMO",
+    "BHARAT_DC001",
+    "BHARAT_AC001",
+    "GB_T",
+  ]),
+  complianceStandard: z.string().trim().min(2).max(160),
+  chargerDocName: z.string().trim().min(2).max(255),
+  chargerDocRef: z.string().trim().min(3).max(2000),
+});
+
 const registerSchema = z.object({
   email: z.string().email().toLowerCase().trim(),
   password: z.string().min(8).max(128),
@@ -20,6 +74,7 @@ const registerSchema = z.object({
   role: z.enum(["CUSTOMER", "PARKING_OPERATOR", "EV_OPERATOR"]).default("CUSTOMER"),
   businessName: z.string().trim().min(2).max(180).optional(),
   registrationNumber: z.string().trim().min(3).max(100).optional(),
+  ownerVerification: evOwnerVerificationSchema.optional(),
 });
 
 export async function POST(req: Request) {
@@ -31,6 +86,17 @@ export async function POST(req: Request) {
     }
 
     const body = registerSchema.parse(await req.json());
+    if (
+      (body.role === "EV_OPERATOR" || body.role === "PARKING_OPERATOR") &&
+      !body.ownerVerification
+    ) {
+      throw new AppError(
+        400,
+        "OWNER_VERIFICATION_REQUIRED",
+        "EV Pump & Facility Owners must complete Owner Verification, Location/Ownership Proof, and Charger Verification."
+      );
+    }
+
     const { db } = await ensureDatabaseReady();
 
     const [existing] = await db
@@ -64,19 +130,55 @@ export async function POST(req: Request) {
 
       await tx.insert(userProfiles).values({
         userId: u.id,
-        preferredCity: "Ludhiana",
+        preferredCity: body.ownerVerification?.siteCity || "Ludhiana",
       });
 
       if (body.role === "PARKING_OPERATOR" || body.role === "EV_OPERATOR") {
-        await tx.insert(operators).values({
-          ownerUserId: u.id,
-          businessName: body.businessName || `${body.fullName} Mobility Pvt Ltd`,
-          registrationNumber: body.registrationNumber || `REG-${Date.now()}`,
-          operatorType: body.role === "EV_OPERATOR" ? "EV_CHARGING" : "PARKING",
-          contactEmail: body.email,
-          contactPhone: body.phone || "+91-98000-00000",
-          status: "PENDING_VERIFICATION",
-        });
+        const verif = body.ownerVerification!;
+        const [op] = await tx
+          .insert(operators)
+          .values({
+            ownerUserId: u.id,
+            businessName: body.businessName || `${verif.ownerName} EV Mobility`,
+            registrationNumber: body.registrationNumber || verif.panNumber,
+            gstNumber: verif.gstinNumber || null,
+            operatorType: body.role === "EV_OPERATOR" ? "EV_CHARGING" : "PARKING",
+            contactEmail: body.email,
+            contactPhone: body.phone || "+91-98000-00000",
+            status: "PENDING_VERIFICATION",
+          })
+          .returning();
+
+        if (op) {
+          await tx.insert(evOwnerVerifications).values({
+            operatorId: op.id,
+            userId: u.id,
+            ownerName: verif.ownerName,
+            businessType: verif.businessType,
+            panNumber: verif.panNumber,
+            gstinNumber: verif.gstinNumber || null,
+            businessDocName: verif.businessDocName,
+            businessDocRef: verif.businessDocRef,
+            siteAddress: verif.siteAddress,
+            siteCity: verif.siteCity,
+            ownershipType: verif.ownershipType,
+            propertyDocName: verif.propertyDocName,
+            propertyDocRef: verif.propertyDocRef,
+            nocDocName: verif.nocDocName,
+            nocDocRef: verif.nocDocRef,
+            electricityBoard: verif.electricityBoard,
+            electricityConsumerNo: verif.electricityConsumerNo,
+            sanctionedLoadKw: verif.sanctionedLoadKw,
+            chargerManufacturer: verif.chargerManufacturer,
+            chargerModel: verif.chargerModel,
+            chargerSerialNumber: verif.chargerSerialNumber,
+            connectorType: verif.connectorType,
+            complianceStandard: verif.complianceStandard,
+            chargerDocName: verif.chargerDocName,
+            chargerDocRef: verif.chargerDocRef,
+            verificationStatus: "PENDING",
+          });
+        }
       }
 
       return u;
@@ -98,7 +200,11 @@ export async function POST(req: Request) {
       action: "USER_REGISTERED",
       entityType: "USER",
       entityId: createdUser.id,
-      afterState: { email: createdUser.email, role: createdUser.role },
+      afterState: {
+        email: createdUser.email,
+        role: createdUser.role,
+        ownerVerificationSubmitted: Boolean(body.ownerVerification),
+      },
       ipAddress: ip,
     });
 

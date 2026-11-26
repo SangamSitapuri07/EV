@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Zap, ShieldCheck, Info } from "lucide-react";
+import { Zap, ShieldCheck, CheckCircle2 } from "lucide-react";
 
 export function Footer() {
   return (
@@ -12,9 +12,9 @@ export function Footer() {
               <span>ParkSmart</span>
             </div>
             <p className="text-xs leading-relaxed text-slate-600">
-              Smart Parking &amp; EV Charging Finder — real-time parking discovery,
-              EV pump slot pre-orders, atomic bay holds, sandbox payment verification,
-              and live availability streaming.
+              Smart Parking &amp; EV Charging Finder — real-time GPS nearby charger
+              discovery, EV pump slot pre-orders, atomic bay holds, and verified
+              EV station onboarding.
             </p>
           </div>
 
@@ -23,42 +23,42 @@ export function Footer() {
               Drivers
             </h3>
             <ul className="mt-3 space-y-2 text-sm text-slate-600">
-              <li><Link href="/explore" className="hover:text-slate-900">Explore Map</Link></li>
+              <li><Link href="/explore" className="hover:text-slate-900">Nearby Chargers Map</Link></li>
               <li><Link href="/dashboard" className="hover:text-slate-900">User Dashboard (Pre-Order EV)</Link></li>
-              <li><Link href="/trip-planner" className="hover:text-slate-900">EV Trip &amp; Heatmap</Link></li>
+              <li><Link href="/trip-planner" className="hover:text-slate-900">EV Trip Planner</Link></li>
             </ul>
           </div>
 
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-900">
-              Partners &amp; EV Pumps
+              EV Station Owners
             </h3>
             <ul className="mt-3 space-y-2 text-sm text-slate-600">
               <li><Link href="/ev-pumps" className="hover:text-slate-900">EV Pumps Dashboard</Link></li>
+              <li><Link href="/register?role=EV_OPERATOR" className="hover:text-slate-900">Owner 3-Step Verification</Link></li>
               <li><Link href="/operator" className="hover:text-slate-900">Operator Hub</Link></li>
-              <li><Link href="/admin" className="hover:text-slate-900">Super Admin Console</Link></li>
-              <li><Link href="/login" className="hover:text-slate-900">Demo Role Accounts</Link></li>
+              <li><Link href="/login" className="hover:text-slate-900">Sign In</Link></li>
             </ul>
           </div>
 
           <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
             <div className="flex items-center gap-1.5 font-semibold text-slate-900">
-              <Info className="h-4 w-4 text-amber-600" />
-              Data &amp; Sandbox Disclosure
+              <ShieldCheck className="h-4 w-4 text-emerald-600" />
+              Verified EV Network Security
             </div>
             <p>
-              Sample facilities in Ludhiana use operator-managed &amp; simulated OCPP telemetry.
-              Payments run in sandbox test mode with server-side HMAC verification.
+              All EV station owners undergo PAN/GSTIN verification, property ownership &amp;
+              electricity load checks, and charger compliance validation.
             </p>
             <div className="flex items-center gap-1.5 pt-1 text-emerald-700 font-medium">
-              <ShieldCheck className="h-3.5 w-3.5" />
-              Zero card numbers stored
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Signed HMAC QR gate passes
             </div>
           </div>
         </div>
         <div className="mt-8 border-t border-slate-200 pt-6 text-xs text-slate-500 flex flex-col sm:flex-row justify-between gap-2">
-          <span>© 2026 Smart Parking &amp; EV Charging Finder. Production-oriented modular platform.</span>
-          <span>API v1 · PostgreSQL Transactional Inventory · SSE Live Stream</span>
+          <span>© 2026 ParkSmart — Smart Parking &amp; EV Charging Finder.</span>
+          <span>Live OpenStreetMap GPS · Transactional Bay Holds · Verified EV Owners</span>
         </div>
       </div>
     </footer>
