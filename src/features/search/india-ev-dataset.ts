@@ -113,18 +113,37 @@ function loadIndiaOpenDataset(): IndiaDatasetRow[] {
   const iConnectors = col("connectors");
   const iMaxPower = col("max_power_kw");
   const iNPoints = col("n_points");
+  const iAccess = col("access");
   const iPricing = col("pricing");
   const iSources = col("sources");
+  const iNSources = col("n_sources");
   const iLastUpdated = col("last_updated");
 
   const parsed: IndiaDatasetRow[] = [];
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i]!;
+    const access = (r[iAccess] ?? "").replace(/\|/g, "").trim().toLowerCase();
+    if (
+      access === "20" ||
+      access.includes("private") ||
+      access === "no" ||
+      access === "permit"
+    ) {
+      continue;
+    }
+
     const lat = Number(r[iLat]);
     const lng = Number(r[iLng]);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
 
     const rawAddr = (r[iAddress] ?? "").replace(/\s+/g, " ").trim();
+    const rawConnectors = (r[iConnectors] ?? "").trim();
+    const nSources = Number(r[iNSources] ?? "1");
+    // Drop unverified single-source rows that lack both a street address and connector metadata
+    if (!rawAddr && !rawConnectors && (!Number.isFinite(nSources) || nSources < 2)) {
+      continue;
+    }
+
     const city = (r[iCity] ?? "").trim();
     const district = (r[iDistrict] ?? "").trim();
     const state = (r[iState] ?? "").trim();
@@ -133,7 +152,6 @@ function loadIndiaOpenDataset(): IndiaDatasetRow[] {
     const fallbackLoc = [city || district, state, postcode].filter(Boolean).join(", ");
     const address = rawAddr || fallbackLoc || null;
 
-    const rawConnectors = (r[iConnectors] ?? "").trim();
     const maxPowerNum = Number(r[iMaxPower]);
     const maxPowerKw =
       Number.isFinite(maxPowerNum) && maxPowerNum > 0 ? maxPowerNum : null;

@@ -250,6 +250,9 @@ export function InteractiveCityMap({
           iconAnchor: [15, 15],
         });
         const marker = L.marker([s.latitude, s.longitude], { icon });
+        marker.bindTooltip(
+          s.operator ? `${s.name} (${s.operator})` : s.name
+        );
         marker.on("click", () => onSelectFacility(s.id));
         marker.addTo(group);
       }
