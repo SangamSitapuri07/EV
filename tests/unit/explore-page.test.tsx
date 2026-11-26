@@ -127,7 +127,7 @@ describe("Explore Page Interactions", () => {
       await screen.findByRole("button", { name: /Allow Location & Find Chargers/i })
     );
 
-    expect(await screen.findByText(/Public EV Charging Points Within 25 km \(1\)/i))
+    expect(await screen.findByText(/EV Charging Stations Within 25 km \(1\)/i))
       .toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("overpass-api.de/api/interpreter"),

@@ -70,6 +70,7 @@ function ExploreContent() {
   const [osmStations, setOsmStations] = useState<ExternalEvChargerStation[]>([]);
   const [externalNotice, setExternalNotice] = useState<string | null>(null);
   const [loadingOsm, setLoadingOsm] = useState(false);
+  const [showAllStations, setShowAllStations] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -173,7 +174,7 @@ function ExploreContent() {
           return;
         }
         setOsmStations([]);
-        setExternalNotice("Network error while fetching nearby EV charging points.");
+        setExternalNotice("Network error while fetching nearby EV charging stations.");
       } finally {
         if (!abortCtrl.signal.aborted) {
           setLoadingOsm(false);
@@ -751,18 +752,31 @@ function ExploreContent() {
               </Card>
             )}
 
-            {/* Nearby External OpenStreetMap / Open Charge Map EV Charging Points */}
+            {/* Nearby EV Charging Stations */}
             {(visibleOsmStations.length > 0 || loadingOsm) && (
               <Card className="p-4 bg-white border-slate-200/80 space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
                     <Zap className="h-4 w-4 text-teal-600" />
-                    Public EV Charging Points Within {radiusKm} km ({visibleOsmStations.length})
+                    EV Charging Stations Within {radiusKm} km ({visibleOsmStations.length})
                   </h2>
-                  {loadingOsm && <span className="text-xs text-slate-500">Scanning area...</span>}
+                  <div className="flex items-center gap-2">
+                    {loadingOsm && <span className="text-xs text-slate-500">Scanning area...</span>}
+                    {visibleOsmStations.length > 30 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAllStations((v) => !v)}
+                        className="text-xs font-bold text-blue-700 hover:underline cursor-pointer"
+                      >
+                        {showAllStations
+                          ? "Show nearest 30"
+                          : `Show more (${Math.min(visibleOsmStations.length, 180)} of ${visibleOsmStations.length})`}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {visibleOsmStations.slice(0, 30).map((s) => (
+                  {visibleOsmStations.slice(0, showAllStations ? 180 : 30).map((s) => (
                     <div
                       key={s.id}
                       onClick={() => setSelectedId(s.id)}

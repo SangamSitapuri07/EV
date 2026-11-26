@@ -263,6 +263,17 @@ describe("Search validation, nearby EV discovery, radius & authenticity", () => 
       expect(s.liveAvailabilityConnected).toBe(false);
       expect(s.availabilityStatus).toBe("UNKNOWN");
     }
+
+    const res100 = await discoverNearbyExternalEvChargers({
+      lat: 31.29,
+      lng: 75.57,
+      radiusKm: 100,
+      includeLocalIndiaDataset: true,
+      includeBeeIndiaApi: false,
+      fetchFn: vi.fn(async () => new Response(JSON.stringify({ elements: [] }), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(res100.stations.length).toBeGreaterThan(result.stations.length);
+    expect(res100.stations.some((s) => s.distanceKm > 50)).toBe(true);
   });
 
   it("discovers keyless BEE India EV stations when BEE API is enabled", async () => {

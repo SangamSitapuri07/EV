@@ -149,7 +149,8 @@ export function InteractiveCityMap({
     }
 
     if (userLocation) {
-      const targetZoom = radiusKm >= 40 ? 10 : radiusKm >= 18 ? 11 : radiusKm >= 8 ? 12 : 13;
+      const targetZoom =
+        radiusKm >= 80 ? 8 : radiusKm >= 40 ? 9 : radiusKm >= 18 ? 11 : radiusKm >= 8 ? 12 : 13;
       map.setView([userLocation.lat, userLocation.lng], targetZoom, { animate: true });
       return;
     }
@@ -353,7 +354,7 @@ export function InteractiveCityMap({
                   Allow Location Access
                 </div>
                 <div className="text-[11px] text-slate-600">
-                  Find real EV charging points near you
+                  Find real EV charging stations near you
                 </div>
               </div>
             </div>

@@ -178,5 +178,5 @@ export function parseOverpassElementsToStations(params: {
       availabilityUpdatedAt: null,
     });
   }
-  return stations.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 60);
+  return stations.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 250);
 }

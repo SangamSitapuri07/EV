@@ -243,7 +243,7 @@ export function queryIndiaOpenEvDataset(params: {
 
   matches.sort((a, b) => a.distanceKm - b.distanceKm);
   return {
-    stations: matches.slice(0, 120),
+    stations: matches.slice(0, 800),
     totalIndexed: rows.length,
   };
 }

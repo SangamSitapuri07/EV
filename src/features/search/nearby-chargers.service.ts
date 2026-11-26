@@ -48,12 +48,47 @@ const nearbyCache = new Map<
 function deduplicateStations(stations: ExternalEvChargerStation[]): ExternalEvChargerStation[] {
   const unique: ExternalEvChargerStation[] = [];
   for (const candidate of stations) {
-    const duplicate = unique.some(
-      (existing) =>
-        haversineKm(existing.latitude, existing.longitude, candidate.latitude, candidate.longitude) <
-        0.08
+    const existing = unique.find((item) => {
+      const gapKm = haversineKm(
+        item.latitude,
+        item.longitude,
+        candidate.latitude,
+        candidate.longitude
+      );
+      if (gapKm < 0.08) return true;
+      if (
+        gapKm < 0.16 &&
+        item.operator &&
+        candidate.operator &&
+        item.operator.toLowerCase() === candidate.operator.toLowerCase()
+      ) {
+        return true;
+      }
+      return false;
+    });
+
+    if (!existing) {
+      unique.push({ ...candidate });
+      continue;
+    }
+
+    // Merge co-located charging points into a single EV station record
+    const mergedStandards = Array.from(
+      new Set([...existing.connectorStandards, ...candidate.connectorStandards])
     );
-    if (!duplicate) unique.push(candidate);
+    existing.connectorStandards = mergedStandards;
+    if (
+      candidate.maxPowerKw !== null &&
+      (existing.maxPowerKw === null || candidate.maxPowerKw > existing.maxPowerKw)
+    ) {
+      existing.maxPowerKw = candidate.maxPowerKw;
+    }
+    if (!existing.address && candidate.address) existing.address = candidate.address;
+    if (!existing.pricing && candidate.pricing) existing.pricing = candidate.pricing;
+    if (!existing.sockets && candidate.sockets) existing.sockets = candidate.sockets;
+    if (candidate.totalConnectors) {
+      existing.totalConnectors = (existing.totalConnectors ?? 0) + candidate.totalConnectors;
+    }
   }
   return unique;
 }
@@ -90,7 +125,7 @@ export async function discoverNearbyExternalEvChargers(params: {
         return true;
       })
       .sort((a, b) => a.distanceKm - b.distanceKm)
-      .slice(0, 60);
+      .slice(0, 500);
 
   if (useCache) {
     const cached = nearbyCache.get(cacheKey);
