@@ -16,9 +16,11 @@ import {
   Clock,
 } from "lucide-react";
 import type { FacilitySearchResultItem } from "@/features/search/search.service";
-import type {
-  ExternalEvChargerStation,
-  NearbyChargersResult,
+import {
+  parseOverpassElementsToStations,
+  type ExternalEvChargerStation,
+  type NearbyChargersResult,
+  type OverpassElement,
 } from "@/features/search/nearby-chargers.service";
 import { InteractiveCityMap } from "@/components/map/interactive-city-map";
 import { Badge, Button, Card, Select, Skeleton } from "@/components/ui/primitives";
@@ -100,11 +102,44 @@ function ExploreContent() {
         }
         setOsmStations(json.data.stations);
         const osmSource = json.data.sources.openStreetMapOverpass;
-        if (osmSource.status === "UNAVAILABLE") {
-          setExternalNotice(
-            osmSource.message ||
-              "External OpenStreetMap Overpass station feed is temporarily unavailable."
-          );
+        if (osmSource.status === "UNAVAILABLE" && json.data.stations.length === 0) {
+          // Fallback: try direct browser Overpass GET when Node.js server network/IPv6 cannot reach Overpass
+          let browserResolved = false;
+          try {
+            const radiusMeters = Math.min(25000, Math.max(500, Math.round(km * 1000)));
+            const overpassQuery = `[out:json][timeout:12];(node["amenity"="charging_station"](around:${radiusMeters},${lat},${lng});way["amenity"="charging_station"](around:${radiusMeters},${lat},${lng}););out center 40;`;
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 10000);
+            const browserRes = await fetch(
+              `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(overpassQuery)}`,
+              { method: "GET", signal: controller.signal }
+            );
+            clearTimeout(timer);
+            if (browserRes.ok) {
+              const browserJson = (await browserRes.json()) as {
+                elements?: OverpassElement[];
+              };
+              const parsed = parseOverpassElementsToStations({
+                elements: browserJson.elements ?? [],
+                lat,
+                lng,
+                radiusKm: Math.min(100, Math.max(0.5, km)),
+                connectorStandard: connectorStandard || undefined,
+                minPowerKw: minPowerKw ? Number(minPowerKw) : undefined,
+              });
+              setOsmStations(parsed);
+              browserResolved = true;
+            }
+          } catch {
+            // Browser Overpass also unreachable
+          }
+
+          if (!browserResolved) {
+            setExternalNotice(
+              osmSource.message ||
+                "External OpenStreetMap Overpass station feed is temporarily unavailable."
+            );
+          }
         }
       } catch {
         setOsmStations([]);

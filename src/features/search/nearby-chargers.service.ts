@@ -82,6 +82,74 @@ function normalizeOsmConnectorStandards(tags: Record<string, string>): {
   };
 }
 
+export interface OverpassElement {
+  id: number;
+  lat?: number;
+  lon?: number;
+  center?: { lat: number; lon: number };
+  tags?: Record<string, string>;
+}
+
+export function parseOverpassElementsToStations(params: {
+  elements: OverpassElement[];
+  lat: number;
+  lng: number;
+  radiusKm: number;
+  connectorStandard?: string;
+  minPowerKw?: number;
+}): ExternalEvChargerStation[] {
+  const stations: ExternalEvChargerStation[] = [];
+  for (const el of params.elements) {
+    const pLat = el.lat ?? el.center?.lat;
+    const pLng = el.lon ?? el.center?.lon;
+    if (
+      typeof pLat !== "number" ||
+      typeof pLng !== "number" ||
+      !Number.isFinite(pLat) ||
+      !Number.isFinite(pLng)
+    ) {
+      continue;
+    }
+    const distanceKm = haversineKm(params.lat, params.lng, pLat, pLng);
+    if (distanceKm > params.radiusKm) continue;
+
+    const tags = el.tags ?? {};
+    const { standards, maxPowerKw, summary } = normalizeOsmConnectorStandards(tags);
+    const addrParts = [
+      tags["addr:street"],
+      tags["addr:city"] || tags["addr:town"] || tags["addr:suburb"],
+    ].filter(Boolean);
+
+    if (params.connectorStandard) {
+      if (standards.length === 0 || !standards.includes(params.connectorStandard)) {
+        continue;
+      }
+    }
+    if (params.minPowerKw !== undefined && params.minPowerKw > 0) {
+      if (maxPowerKw === null || maxPowerKw < params.minPowerKw) continue;
+    }
+
+    stations.push({
+      id: `osm-${el.id}`,
+      source: "OPENSTREETMAP_OVERPASS",
+      name: tags.name || tags.operator || "Public EV Charging Station",
+      operator: tags.operator || null,
+      address: addrParts.length > 0 ? addrParts.join(", ") : null,
+      latitude: pLat,
+      longitude: pLng,
+      distanceKm,
+      connectorStandards: standards,
+      maxPowerKw,
+      sockets: summary,
+      ownerVerified: false,
+      stationDocsVerified: false,
+      liveAvailabilityConnected: false,
+      availabilityStatus: "UNKNOWN",
+      availabilityUpdatedAt: null,
+    });
+  }
+  return stations.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 25);
+}
 function mapOcmConnectionStandard(title?: string): string | null {
   if (!title) return null;
   const lower = title.toLowerCase();
@@ -227,27 +295,29 @@ export async function discoverNearbyExternalEvChargers(params: {
     message: "OpenStreetMap Overpass API could not be reached.",
   };
 
-  const radiusMeters = Math.min(50000, Math.max(500, Math.round(params.radiusKm * 1000)));
-  const overpassQuery = `[out:json][timeout:10];(node["amenity"="charging_station"](around:${radiusMeters},${params.lat},${params.lng});way["amenity"="charging_station"](around:${radiusMeters},${params.lat},${params.lng}););out center 40;`;
+  const radiusMeters = Math.min(25000, Math.max(500, Math.round(params.radiusKm * 1000)));
+  const overpassQuery = `[out:json][timeout:12];(node["amenity"="charging_station"](around:${radiusMeters},${params.lat},${params.lng});way["amenity"="charging_station"](around:${radiusMeters},${params.lat},${params.lng}););out center 40;`;
   const endpoints = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
   ];
 
   for (const endpoint of endpoints) {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 9000);
-      const res = await fetchImpl(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-          "User-Agent": "ParkSmart-EV-Finder/1.0",
-          Accept: "application/json",
-        },
-        body: `data=${encodeURIComponent(overpassQuery)}`,
-        signal: controller.signal,
-      });
+      const timer = setTimeout(() => controller.abort(), 12000);
+      const res = await fetchImpl(
+        `${endpoint}?data=${encodeURIComponent(overpassQuery)}`,
+        {
+          method: "GET",
+          headers: {
+            "User-Agent": "ParkSmart-EV-Finder/1.0",
+            Accept: "application/json",
+          },
+          signal: controller.signal,
+        }
+      );
       clearTimeout(timer);
 
       if (!res.ok) {
@@ -259,55 +329,16 @@ export async function discoverNearbyExternalEvChargers(params: {
       }
 
       const json = (await res.json()) as {
-        elements?: Array<{
-          id: number;
-          lat?: number;
-          lon?: number;
-          center?: { lat: number; lon: number };
-          tags?: Record<string, string>;
-        }>;
+        elements?: OverpassElement[];
       };
 
-      for (const el of json.elements ?? []) {
-        const pLat = el.lat ?? el.center?.lat;
-        const pLng = el.lon ?? el.center?.lon;
-        if (
-          typeof pLat !== "number" ||
-          typeof pLng !== "number" ||
-          !Number.isFinite(pLat) ||
-          !Number.isFinite(pLng)
-        ) {
-          continue;
-        }
-        const distanceKm = haversineKm(params.lat, params.lng, pLat, pLng);
-        if (distanceKm > params.radiusKm) continue;
-
-        const tags = el.tags ?? {};
-        const { standards, maxPowerKw, summary } = normalizeOsmConnectorStandards(tags);
-        const addrParts = [
-          tags["addr:street"],
-          tags["addr:city"] || tags["addr:town"] || tags["addr:suburb"],
-        ].filter(Boolean);
-
-        stations.push({
-          id: `osm-${el.id}`,
-          source: "OPENSTREETMAP_OVERPASS",
-          name: tags.name || tags.operator || "Public EV Charging Station",
-          operator: tags.operator || null,
-          address: addrParts.length > 0 ? addrParts.join(", ") : null,
-          latitude: pLat,
-          longitude: pLng,
-          distanceKm,
-          connectorStandards: standards,
-          maxPowerKw,
-          sockets: summary,
-          ownerVerified: false,
-          stationDocsVerified: false,
-          liveAvailabilityConnected: false,
-          availabilityStatus: "UNKNOWN",
-          availabilityUpdatedAt: null,
-        });
-      }
+      const parsedOsm = parseOverpassElementsToStations({
+        elements: json.elements ?? [],
+        lat: params.lat,
+        lng: params.lng,
+        radiusKm: params.radiusKm,
+      });
+      stations.push(...parsedOsm);
 
       overpassStatus = { status: "OK" };
       break;
