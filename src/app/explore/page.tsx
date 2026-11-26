@@ -11,7 +11,7 @@ import {
   Scale,
   X,
   LocateFixed,
-  ExternalLink,
+  Navigation,
   ShieldCheck,
   Clock,
 } from "lucide-react";
@@ -22,6 +22,7 @@ import {
   type NearbyChargersResult,
   type OverpassElement,
 } from "@/features/search/nearby-chargers.service";
+import { computeInAppRoute, type InAppRoute } from "@/lib/in-app-navigation";
 import { InteractiveCityMap } from "@/components/map/interactive-city-map";
 import { Badge, Button, Card, Select, Skeleton } from "@/components/ui/primitives";
 import { formatPaise, getFacilityPhoto } from "@/lib/utils";
@@ -73,6 +74,8 @@ function ExploreContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sseConnected, setSseConnected] = useState(false);
+  const [activeRoute, setActiveRoute] = useState<InAppRoute | null>(null);
+  const [navigating, setNavigating] = useState(false);
 
   const fetchNearbyExternalChargers = useCallback(
     async (lat: number, lng: number, km: number) => {
@@ -411,6 +414,34 @@ function ExploreContent() {
     );
   }
 
+  const handleNavigateToStation = useCallback(
+    async (target: { id: string; name: string; latitude: number; longitude: number }) => {
+      setSelectedId(target.id);
+      if (!userLocation) {
+        setLocationError(
+          "Share your location (or enter your starting city on the map) to draw turn-by-turn route directions."
+        );
+        requestUserLocation();
+        return;
+      }
+      setNavigating(true);
+      try {
+        const route = await computeInAppRoute({
+          destinationId: target.id,
+          destinationName: target.name,
+          originLat: userLocation.lat,
+          originLng: userLocation.lng,
+          destLat: target.latitude,
+          destLng: target.longitude,
+        });
+        setActiveRoute(route);
+      } finally {
+        setNavigating(false);
+      }
+    },
+    [userLocation, requestUserLocation]
+  );
+
   const visibleOsmStations = !wantEv && wantParking ? [] : osmStations;
   const comparedFacilities = facilities.filter((f) => compareIds.includes(f.id));
   const showEmptyResults =
@@ -639,7 +670,65 @@ function ExploreContent() {
               onLocateUser={requestUserLocation}
               onResolveCityQuery={resolveCityQuery}
               onUseDefaultLocation={useDefaultLocation}
+              activeRoute={activeRoute}
+              navigating={navigating}
+              onNavigateToStation={handleNavigateToStation}
+              onClearRoute={() => setActiveRoute(null)}
             />
+
+            {/* In-App Turn-by-Turn Navigation Panel */}
+            {activeRoute && (
+              <Card className="p-4 bg-white border-blue-200 shadow-sm space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-700">
+                      <Navigation className="h-4 w-4" />
+                    </span>
+                    <div>
+                      <h2 className="text-sm font-extrabold text-slate-900">
+                        In-App Route to {activeRoute.destinationName}
+                      </h2>
+                      <p className="text-xs text-slate-600">
+                        <strong>{activeRoute.distanceKm} km</strong> · Est.{" "}
+                        <strong>{activeRoute.durationMinutes} min</strong> drive{" "}
+                        {activeRoute.source === "DIRECT_FALLBACK"
+                          ? "(direct corridor line — road router unavailable)"
+                          : "(via live road routing)"}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setActiveRoute(null)}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Clear Route
+                  </Button>
+                </div>
+                <ol className="max-h-44 overflow-y-auto divide-y divide-slate-100 rounded-xl border border-slate-100 bg-slate-50/70 text-xs">
+                  {activeRoute.steps.map((step, idx) => (
+                    <li
+                      key={`${idx}-${step.instruction}`}
+                      className="flex items-center justify-between gap-3 px-3 py-2 text-slate-700"
+                    >
+                      <span>
+                        <strong className="text-slate-900 mr-1.5">{idx + 1}.</strong>
+                        {step.instruction}
+                      </span>
+                      {step.distanceMeters > 0 && (
+                        <span className="shrink-0 font-mono text-[11px] text-slate-500">
+                          {step.distanceMeters >= 1000
+                            ? `${(step.distanceMeters / 1000).toFixed(1)} km`
+                            : `${step.distanceMeters} m`}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </Card>
+            )}
 
             {/* Nearby External OpenStreetMap / Open Charge Map EV Charging Points */}
             {(visibleOsmStations.length > 0 || loadingOsm) && (
@@ -678,15 +767,22 @@ function ExploreContent() {
                           <Clock className="h-2.5 w-2.5" />
                           Availability unknown
                         </span>
-                        <a
-                          href={`https://www.google.com/maps/dir/?api=1&destination=${s.latitude},${s.longitude}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline"
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleNavigateToStation({
+                              id: s.id,
+                              name: s.name,
+                              latitude: s.latitude,
+                              longitude: s.longitude,
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 font-bold text-blue-700 hover:underline cursor-pointer"
                         >
-                          Directions <ExternalLink className="h-3 w-3" />
-                        </a>
+                          <Navigation className="h-3 w-3" />
+                          Navigate
+                        </button>
                       </div>
                     </div>
                   ))}

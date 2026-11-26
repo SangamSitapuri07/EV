@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { GET as getFacilities } from "@/app/api/v1/facilities/route";
 import { GET as getNearbyChargers } from "@/app/api/v1/ev-chargers/nearby/route";
 import { discoverNearbyExternalEvChargers } from "@/features/search/nearby-chargers.service";
+import { computeInAppRoute } from "@/lib/in-app-navigation";
 import { resetDbForTests, ensureDatabaseReady } from "@/db";
 import { facilities } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -166,5 +167,56 @@ describe("Search validation, nearby EV discovery, radius & authenticity", () => 
     expect(result.stations).toEqual([]);
     expect(result.sources.openStreetMapOverpass.status).toBe("UNAVAILABLE");
     expect(result.sources.openStreetMapOverpass.message).toBeTruthy();
+  });
+
+  it("computes in-app OSRM route or clean fallback without redirecting outside the website", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            code: "Ok",
+            routes: [
+              {
+                distance: 3200,
+                duration: 420,
+                geometry: {
+                  coordinates: [
+                    [77.209, 28.6139],
+                    [77.219, 28.625],
+                  ],
+                },
+                legs: [
+                  {
+                    steps: [
+                      { distance: 1200, name: "Janpath", maneuver: { type: "depart", modifier: "north" } },
+                      { distance: 0, name: "", maneuver: { type: "arrive" } },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      )
+    );
+
+    const route = await computeInAppRoute({
+      destinationId: "ocm-1",
+      destinationName: "Connaught Place Charger",
+      originLat: 28.6139,
+      originLng: 77.209,
+      destLat: 28.625,
+      destLng: 77.219,
+    });
+
+    expect(route.source).toBe("OSRM");
+    expect(route.distanceKm).toBe(3.2);
+    expect(route.durationMinutes).toBe(7);
+    expect(route.coordinates[0]).toEqual([28.6139, 77.209]);
+    expect(route.steps.length).toBeGreaterThanOrEqual(2);
+
+    vi.unstubAllGlobals();
   });
 });

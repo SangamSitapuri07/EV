@@ -10,7 +10,7 @@ import {
   ScanSearch,
   Layers,
   Zap,
-  ExternalLink,
+  Navigation,
   Search,
   X,
   ShieldCheck,
@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import type { FacilitySearchResultItem } from "@/features/search/search.service";
 import type { ExternalEvChargerStation } from "@/features/search/nearby-chargers.service";
+import type { InAppRoute } from "@/lib/in-app-navigation";
 import { formatPaise, getFacilityPhoto } from "@/lib/utils";
 import { Button } from "@/components/ui/primitives";
 
@@ -42,6 +43,15 @@ interface MapProps {
   onLocateUser: () => void;
   onResolveCityQuery?: (query: string) => Promise<void>;
   onUseDefaultLocation?: () => void;
+  activeRoute?: InAppRoute | null;
+  navigating?: boolean;
+  onNavigateToStation?: (target: {
+    id: string;
+    name: string;
+    latitude: number;
+    longitude: number;
+  }) => void;
+  onClearRoute?: () => void;
 }
 
 export function InteractiveCityMap({
@@ -58,6 +68,10 @@ export function InteractiveCityMap({
   onLocateUser,
   onResolveCityQuery,
   onUseDefaultLocation,
+  activeRoute = null,
+  navigating = false,
+  onNavigateToStation,
+  onClearRoute,
 }: MapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
@@ -115,10 +129,21 @@ export function InteractiveCityMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-center map when user location, radius, or facilities update
+  // Re-center map when route, user location, radius, or facilities update
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+
+    if (activeRoute && activeRoute.coordinates.length >= 2 && typeof window !== "undefined") {
+      void import("leaflet").then((L) => {
+        if (!mapRef.current) return;
+        mapRef.current.fitBounds(L.latLngBounds(activeRoute.coordinates), {
+          padding: [56, 56],
+          maxZoom: 15,
+        });
+      });
+      return;
+    }
 
     if (userLocation) {
       const targetZoom = radiusKm >= 40 ? 10 : radiusKm >= 18 ? 11 : radiusKm >= 8 ? 12 : 13;
@@ -137,7 +162,7 @@ export function InteractiveCityMap({
         }
       });
     }
-  }, [userLocation, radiusKm, facilities]);
+  }, [activeRoute, userLocation, radiusKm, facilities]);
 
   // Render live pins (user GPS, ParkSmart facilities, OSM/OCM EV chargers, optional heatmap)
   useEffect(() => {
@@ -225,6 +250,16 @@ export function InteractiveCityMap({
         marker.on("click", () => onSelectFacility(s.id));
         marker.addTo(group);
       }
+
+      // Active in-app route polyline
+      if (activeRoute && activeRoute.coordinates.length >= 2) {
+        L.polyline(activeRoute.coordinates, {
+          color: "#1D4ED8",
+          weight: 5,
+          opacity: 0.9,
+          dashArray: activeRoute.source === "DIRECT_FALLBACK" ? "8 6" : undefined,
+        }).addTo(group);
+      }
     });
 
     return () => {
@@ -238,6 +273,7 @@ export function InteractiveCityMap({
     isDefaultLocation,
     radiusKm,
     showHeatmap,
+    activeRoute,
     onSelectFacility,
   ]);
 
@@ -403,15 +439,34 @@ export function InteractiveCityMap({
                 <Clock className="h-3 w-3" />
                 Availability unknown (external map listing)
               </div>
-              <div>
-                <a
-                  href={`https://www.google.com/maps/dir/?api=1&destination=${selectedOsm.latitude},${selectedOsm.longitude}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 hover:underline pt-1"
-                >
-                  Navigate to EV Station <ExternalLink className="h-3 w-3" />
-                </a>
+              <div className="flex items-center justify-between pt-1">
+                {onNavigateToStation && (
+                  <button
+                    type="button"
+                    disabled={navigating}
+                    onClick={() =>
+                      onNavigateToStation({
+                        id: selectedOsm.id,
+                        name: selectedOsm.name,
+                        latitude: selectedOsm.latitude,
+                        longitude: selectedOsm.longitude,
+                      })
+                    }
+                    className="inline-flex items-center gap-1 rounded-lg bg-[#0F2942] px-2.5 py-1 text-[11px] font-bold text-white hover:bg-[#173A5E] transition cursor-pointer disabled:opacity-60"
+                  >
+                    <Navigation className="h-3 w-3" />
+                    {navigating ? "Routing..." : "Navigate Here"}
+                  </button>
+                )}
+                {activeRoute && activeRoute.destinationId === selectedOsm.id && onClearRoute && (
+                  <button
+                    type="button"
+                    onClick={onClearRoute}
+                    className="text-[11px] font-semibold text-slate-600 hover:text-slate-900 underline cursor-pointer"
+                  >
+                    Clear Route
+                  </button>
+                )}
               </div>
             </div>
           ) : (
@@ -461,12 +516,31 @@ export function InteractiveCityMap({
                         Owner Verified
                       </span>
                     )}
-                    <Link
-                      href={`/facilities/${selectedFacility.slug}`}
-                      className="ml-auto text-[11px] font-bold text-blue-700 hover:underline"
-                    >
-                      Book →
-                    </Link>
+                    <div className="ml-auto flex items-center gap-2">
+                      {onNavigateToStation && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onNavigateToStation({
+                              id: selectedFacility.id,
+                              name: selectedFacility.name,
+                              latitude: selectedFacility.latitude,
+                              longitude: selectedFacility.longitude,
+                            })
+                          }
+                          className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-700 hover:text-blue-700 cursor-pointer"
+                        >
+                          <Navigation className="h-3 w-3" />
+                          Route
+                        </button>
+                      )}
+                      <Link
+                        href={`/facilities/${selectedFacility.slug}`}
+                        className="text-[11px] font-bold text-blue-700 hover:underline"
+                      >
+                        Book →
+                      </Link>
+                    </div>
                   </div>
                 </div>
               </div>

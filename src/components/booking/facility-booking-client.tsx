@@ -10,7 +10,6 @@ import {
   ShieldCheck,
   AlertTriangle,
   CheckCircle2,
-  ExternalLink,
   Star,
   Sparkles,
   CreditCard,
@@ -20,6 +19,7 @@ import {
   Navigation,
 } from "lucide-react";
 import { Badge, Button, Card, Input, StatusPill } from "@/components/ui/primitives";
+import { computeInAppRoute, type InAppRoute } from "@/lib/in-app-navigation";
 import { formatPaise, getFacilityGallery } from "@/lib/utils";
 import type { PriceBreakdown } from "@/features/pricing/pricing.service";
 
@@ -366,6 +366,11 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
   const gallery = getFacilityGallery(fac.slug, fac.photos);
   const [activePhoto, setActivePhoto] = useState(gallery[0]!);
   const miniMapRef = useRef<HTMLDivElement | null>(null);
+  const miniMapInstanceRef = useRef<import("leaflet").Map | null>(null);
+  const miniRouteLayerRef = useRef<import("leaflet").LayerGroup | null>(null);
+  const [inAppRoute, setInAppRoute] = useState<InAppRoute | null>(null);
+  const [routingBusy, setRoutingBusy] = useState(false);
+  const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const baseRule = initial.pricingRules[0];
   const avgRating =
     initial.reviews.length > 0
@@ -397,12 +402,83 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
         iconAnchor: [14, 14],
       });
       L.marker([fac.latitude, fac.longitude], { icon: pin }).addTo(mapInstance);
+      miniMapInstanceRef.current = mapInstance;
+      miniRouteLayerRef.current = L.layerGroup().addTo(mapInstance);
     });
     return () => {
       cancelled = true;
+      miniMapInstanceRef.current = null;
+      miniRouteLayerRef.current = null;
       mapInstance?.remove();
     };
   }, [fac.latitude, fac.longitude]);
+
+  useEffect(() => {
+    const map = miniMapInstanceRef.current;
+    const group = miniRouteLayerRef.current;
+    if (!map || !group || typeof window === "undefined") return;
+    void import("leaflet").then((L) => {
+      if (!miniRouteLayerRef.current || !miniMapInstanceRef.current) return;
+      miniRouteLayerRef.current.clearLayers();
+      if (!inAppRoute || inAppRoute.coordinates.length < 2) {
+        miniMapInstanceRef.current.setView([fac.latitude, fac.longitude], 15);
+        return;
+      }
+      const userPin = L.divIcon({
+        className: "parksmart-user-pin",
+        html: `<div style="width:14px;height:14px;border-radius:9999px;background:#2563EB;border:2px solid #fff;box-shadow:0 0 0 4px rgba(37,99,235,0.25);"></div>`,
+        iconSize: [14, 14],
+        iconAnchor: [7, 7],
+      });
+      L.marker([inAppRoute.origin.lat, inAppRoute.origin.lng], { icon: userPin }).addTo(
+        miniRouteLayerRef.current
+      );
+      L.polyline(inAppRoute.coordinates, {
+        color: "#1D4ED8",
+        weight: 4,
+        opacity: 0.9,
+      }).addTo(miniRouteLayerRef.current);
+      miniMapInstanceRef.current.fitBounds(L.latLngBounds(inAppRoute.coordinates), {
+        padding: [28, 28],
+        maxZoom: 15,
+      });
+    });
+  }, [inAppRoute, fac.latitude, fac.longitude]);
+
+  function handleShowInAppDirections() {
+    setRouteNotice(null);
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      setRouteNotice("GPS directions require https:// or http://localhost.");
+      return;
+    }
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setRouteNotice("Geolocation is not supported in this browser.");
+      return;
+    }
+    setRoutingBusy(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const route = await computeInAppRoute({
+            destinationId: fac.id,
+            destinationName: fac.name,
+            originLat: pos.coords.latitude,
+            originLng: pos.coords.longitude,
+            destLat: fac.latitude,
+            destLng: fac.longitude,
+          });
+          setInAppRoute(route);
+        } finally {
+          setRoutingBusy(false);
+        }
+      },
+      () => {
+        setRoutingBusy(false);
+        setRouteNotice("Allow browser location access to calculate the in-app route.");
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
 
   return (
     <div className="bg-[#F4F7FB] min-h-screen">
@@ -530,16 +606,45 @@ export function FacilityBookingClient({ initial }: { initial: InitialData }) {
               </button>
             </a>
 
-            <a
-              href={`https://www.google.com/maps/dir/?api=1&destination=${fac.latitude},${fac.longitude}`}
-              target="_blank"
-              rel="noreferrer"
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+            <button
+              type="button"
+              onClick={handleShowInAppDirections}
+              disabled={routingBusy}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition cursor-pointer disabled:opacity-60"
             >
               <Navigation className="h-3.5 w-3.5" />
-              Get Directions
-              <ExternalLink className="h-3 w-3" />
-            </a>
+              {routingBusy ? "Calculating Route..." : "Get In-App Directions"}
+            </button>
+
+            {routeNotice && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-1.5 text-[11px] text-amber-900">
+                {routeNotice}
+              </div>
+            )}
+
+            {inAppRoute && (
+              <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-3 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-900">
+                    {inAppRoute.distanceKm} km · {inAppRoute.durationMinutes} min
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setInAppRoute(null)}
+                    className="text-[11px] font-semibold text-blue-700 hover:underline cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <ol className="max-h-32 overflow-y-auto space-y-1 text-[11px] text-slate-700">
+                  {inAppRoute.steps.map((s, idx) => (
+                    <li key={`${idx}-${s.instruction}`}>
+                      <strong>{idx + 1}.</strong> {s.instruction}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
 
             {fac.supportPhone && (
               <div className="text-center text-[11px] text-slate-500">
