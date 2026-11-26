@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: volt_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: volt_user
+      POSTGRES_PASSWORD: volt_password_change_me
+      POSTGRES_DB: smart_parking_ev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./src/db/migrations/0001_init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./src/db/migrations/0002_postgis_prod.sql:/docker-entrypoint-initdb.d/02_postgis_prod.sql:ro
+      - ./src/db/migrations/0003_oauth_accounts.sql:/docker-entrypoint-initdb.d/03_oauth_accounts.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U volt_user -d smart_parking_ev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: volt_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: volt_web
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://volt_user:volt_password_change_me@postgres:5432/smart_parking_ev
+      AUTH_JWT_SECRET: replace-with-64-char-random-secret-in-production
+      QR_SIGNING_SECRET: replace-with-64-char-qr-hmac-secret-in-production
+      PAYMENT_GATEWAY_MODE: sandbox
+      RAZORPAY_KEY_ID: rzp_test_placeholder
+      RAZORPAY_KEY_SECRET: rzp_test_secret_placeholder
+      RAZORPAY_WEBHOOK_SECRET: whsec_placeholder
+
+volumes:
+  pgdata:
