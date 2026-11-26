@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { and, eq } from "drizzle-orm";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { ensureDatabaseReady } from "@/db";
-import { oauthAccounts, userProfiles, users } from "@/db/schema";
+import { oauthAccounts, operators, userProfiles, users } from "@/db/schema";
 import { AppError } from "@/lib/api-response";
 import { writeAuditLog } from "@/lib/audit";
 import {
@@ -79,6 +79,7 @@ export function getGoogleRedirectUri(req: Request): string {
 export async function createGoogleAuthorizationRequest(params: {
   req: Request;
   redirectTo?: string | null;
+  requestedRole?: "CUSTOMER" | "EV_OPERATOR";
 }) {
   const { clientId } = getGoogleCredentials();
   const redirectUri = getGoogleRedirectUri(params.req);
@@ -93,6 +94,7 @@ export async function createGoogleAuthorizationRequest(params: {
     state,
     codeVerifier,
     redirectTo: safeRedirectTo,
+    requestedRole: params.requestedRole,
   });
 
   const authUrl = new URL(GOOGLE_AUTH_ENDPOINT);
@@ -153,6 +155,7 @@ export async function verifyGoogleIdToken(
 export async function resolveOrCreateGoogleUser(params: {
   profile: VerifiedGoogleProfile;
   ipAddress?: string;
+  requestedRole?: "CUSTOMER" | "EV_OPERATOR";
 }): Promise<{ user: SessionUser; sessionToken: string; isNewUser: boolean }> {
   if (!params.profile.emailVerified) {
     throw new AppError(
@@ -235,8 +238,9 @@ export async function resolveOrCreateGoogleUser(params: {
         ipAddress: params.ipAddress,
       });
     } else {
-      // 3. Provision a brand-new CUSTOMER account
+      // 3. Provision a brand-new account (CUSTOMER or EV_OPERATOR via Google OAuth)
       isNewUser = true;
+      const targetRole = params.requestedRole === "EV_OPERATOR" ? "EV_OPERATOR" : "CUSTOMER";
       const randomUnusablePassword = `oauth-google-${crypto.randomBytes(32).toString("hex")}`;
       const passwordHash = await hashPassword(randomUnusablePassword);
 
@@ -246,7 +250,7 @@ export async function resolveOrCreateGoogleUser(params: {
           email: normalizedEmail,
           passwordHash,
           fullName: params.profile.name,
-          role: "CUSTOMER",
+          role: targetRole,
           emailVerified: true,
           isActive: true,
         })
@@ -258,8 +262,20 @@ export async function resolveOrCreateGoogleUser(params: {
 
       await db.insert(userProfiles).values({
         userId: createdUser.id,
-        preferredCity: "Ludhiana",
       });
+
+      if (targetRole === "EV_OPERATOR") {
+        await db.insert(operators).values({
+          ownerUserId: createdUser.id,
+          businessName: `${params.profile.name} EV Station`,
+          registrationNumber: `GOOG-${createdUser.id.slice(0, 8).toUpperCase()}`,
+          operatorType: "EV_CHARGING",
+          contactEmail: normalizedEmail,
+          contactPhone: "",
+          status: "APPROVED",
+          verifiedAt: new Date(),
+        });
+      }
 
       await db.insert(oauthAccounts).values({
         userId: createdUser.id,
@@ -275,7 +291,7 @@ export async function resolveOrCreateGoogleUser(params: {
         action: "USER_REGISTERED_OAUTH",
         entityType: "USER",
         entityId: createdUser.id,
-        afterState: { provider: "google", email: normalizedEmail },
+        afterState: { provider: "google", email: normalizedEmail, role: targetRole },
         ipAddress: params.ipAddress,
       });
 
@@ -285,6 +301,34 @@ export async function resolveOrCreateGoogleUser(params: {
 
   if (!userRow || !userRow.isActive || userRow.deletedAt) {
     throw new AppError(403, "ACCOUNT_DISABLED", "This account has been disabled.");
+  }
+
+  // If an existing CUSTOMER chooses to sign in as EV_OPERATOR via Google, ensure operator record exists
+  if (params.requestedRole === "EV_OPERATOR" && userRow.role === "CUSTOMER") {
+    const [updated] = await db
+      .update(users)
+      .set({ role: "EV_OPERATOR", updatedAt: new Date() })
+      .where(eq(users.id, userRow.id))
+      .returning();
+    if (updated) userRow = updated;
+
+    const existingOps = await db
+      .select()
+      .from(operators)
+      .where(eq(operators.ownerUserId, userRow.id))
+      .limit(1);
+    if (existingOps.length === 0) {
+      await db.insert(operators).values({
+        ownerUserId: userRow.id,
+        businessName: `${userRow.fullName} EV Station`,
+        registrationNumber: `GOOG-${userRow.id.slice(0, 8).toUpperCase()}`,
+        operatorType: "EV_CHARGING",
+        contactEmail: userRow.email,
+        contactPhone: userRow.phone ?? "",
+        status: "APPROVED",
+        verifiedAt: new Date(),
+      });
+    }
   }
 
   await db
@@ -389,14 +433,20 @@ export async function handleGoogleOAuthCallback(params: {
   }
 
   const ipAddress = params.req.headers.get("x-forwarded-for") ?? "local";
-  const result = await resolveOrCreateGoogleUser({ profile, ipAddress });
+  const result = await resolveOrCreateGoogleUser({
+    profile,
+    ipAddress,
+    requestedRole: parsedCookie.requestedRole,
+  });
 
   const roleDefaultTarget =
     result.user.role === "SUPER_ADMIN"
       ? "/admin"
       : result.user.role === "CUSTOMER"
         ? "/dashboard"
-        : "/operator";
+        : result.user.role === "EV_OPERATOR"
+          ? "/ev-pumps"
+          : "/operator";
 
   const finalRedirect =
     parsedCookie.redirectTo === "/dashboard" && result.user.role !== "CUSTOMER"

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Car, ShieldCheck, X, Zap, ArrowRight } from "lucide-react";
+import { Car, X, Zap, ArrowRight } from "lucide-react";
 import { GoogleSignInButton } from "@/components/auth/google-signin-button";
 
 const DISMISS_KEY = "parksmart_login_prompt_dismissed";
@@ -13,7 +13,6 @@ export function LoginRolePrompt() {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    // Don't interrupt auth or already-signed-in flows
     if (pathname === "/login" || pathname === "/register") {
       return;
     }
@@ -69,7 +68,7 @@ export function LoginRolePrompt() {
             How would you like to sign in?
           </h2>
           <p className="text-xs text-slate-600">
-            Choose your account type to find nearby EV chargers, pre-order slots, or manage verified charging stations.
+            Choose Customer or EV Owner to continue directly with Google.
           </p>
         </div>
 
@@ -87,13 +86,17 @@ export function LoginRolePrompt() {
             </div>
 
             <div className="space-y-2.5">
-              <GoogleSignInButton redirectTo="/dashboard" label="Continue with Google" />
+              <GoogleSignInButton
+                role="CUSTOMER"
+                redirectTo="/dashboard"
+                label="Continue with Google"
+              />
               <Link
                 href="/login?role=customer"
                 onClick={handleDismiss}
                 className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition"
               >
-                Sign in with Email
+                More Sign-In Options
                 <ArrowRight className="h-3.5 w-3.5" />
               </Link>
             </div>
@@ -107,39 +110,23 @@ export function LoginRolePrompt() {
               </div>
               <h3 className="text-base font-bold text-slate-900">Login as EV Owner</h3>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Manage EV pumps and pre-orders. New owners require 3-step security verification:
+                Sign in directly with Google to manage your EV charging pumps, connectors, and pre-orders.
               </p>
-              <ul className="space-y-1 text-[11px] text-slate-700 font-medium">
-                <li className="flex items-center gap-1.5">
-                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                  1. Owner PAN / GSTIN &amp; Business Docs
-                </li>
-                <li className="flex items-center gap-1.5">
-                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                  2. Property Ownership / Lease, NOC &amp; Electricity Proof
-                </li>
-                <li className="flex items-center gap-1.5">
-                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                  3. Charger Serial, Model &amp; Compliance Docs
-                </li>
-              </ul>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-2.5">
+              <GoogleSignInButton
+                role="EV_OPERATOR"
+                redirectTo="/ev-pumps"
+                label="Continue with Google"
+              />
               <Link
                 href="/login?role=ev_owner"
                 onClick={handleDismiss}
-                className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#0F2942] py-2.5 text-xs font-bold text-white hover:bg-[#173A5E] transition"
+                className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-emerald-600 bg-white py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50 transition"
               >
-                EV Owner Sign In
+                More Sign-In Options
                 <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
-              <Link
-                href="/register?role=EV_OPERATOR"
-                onClick={handleDismiss}
-                className="flex w-full items-center justify-center rounded-xl border border-emerald-600 bg-white py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50 transition"
-              >
-                Register &amp; Verify EV Pump
               </Link>
             </div>
           </div>

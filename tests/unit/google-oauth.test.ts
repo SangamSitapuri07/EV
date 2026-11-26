@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { ensureDatabaseReady } from "@/db";
 import { seedIfEmpty } from "@/db/seed-data";
-import { auditLogs, oauthAccounts, userProfiles, users } from "@/db/schema";
+import { auditLogs, oauthAccounts, operators, userProfiles, users } from "@/db/schema";
 import {
   createGoogleAuthorizationRequest,
   handleGoogleOAuthCallback,
@@ -179,5 +179,33 @@ describe("Google OAuth 2.0 / OIDC (PKCE, CSRF State & Account Linking)", () => {
 
     expect(linked.isNewUser).toBe(false);
     expect(linked.user.id).toBe(existingCustomer!.id);
+  });
+
+  it("provisions an EV_OPERATOR user and approved operator profile directly via Google sign-in without extra documents", async () => {
+    const email = `google.owner.${Date.now()}@gmail.com`;
+    const sub = `google-owner-${Date.now()}`;
+
+    const ownerLogin = await resolveOrCreateGoogleUser({
+      profile: {
+        sub,
+        email,
+        emailVerified: true,
+        name: "Rohan EV Hub",
+      },
+      requestedRole: "EV_OPERATOR",
+      ipAddress: "127.0.0.1",
+    });
+
+    expect(ownerLogin.isNewUser).toBe(true);
+    expect(ownerLogin.user.role).toBe("EV_OPERATOR");
+
+    const { db } = await ensureDatabaseReady();
+    const [opRow] = await db
+      .select()
+      .from(operators)
+      .where(eq(operators.ownerUserId, ownerLogin.user.id))
+      .limit(1);
+    expect(opRow).toBeDefined();
+    expect(opRow?.status).toBe("APPROVED");
   });
 });

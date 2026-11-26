@@ -31,9 +31,17 @@ export async function GET(req: Request) {
     }
 
     const redirectTo = url.searchParams.get("redirectTo");
+    const roleParam = url.searchParams.get("role");
+    const requestedRole =
+      roleParam === "EV_OPERATOR"
+        ? "EV_OPERATOR"
+        : roleParam === "CUSTOMER"
+          ? "CUSTOMER"
+          : undefined;
     const { authorizationUrl, stateCookieJwt } = await createGoogleAuthorizationRequest({
       req,
       redirectTo,
+      requestedRole,
     });
 
     const response = NextResponse.redirect(authorizationUrl, 302);

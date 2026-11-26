@@ -67,6 +67,7 @@ export interface OAuthStatePayload {
   state: string;
   codeVerifier: string;
   redirectTo: string;
+  requestedRole?: "CUSTOMER" | "EV_OPERATOR";
 }
 
 export async function signOAuthStateToken(payload: OAuthStatePayload): Promise<string> {
@@ -74,6 +75,7 @@ export async function signOAuthStateToken(payload: OAuthStatePayload): Promise<s
     state: payload.state,
     codeVerifier: payload.codeVerifier,
     redirectTo: payload.redirectTo,
+    ...(payload.requestedRole ? { requestedRole: payload.requestedRole } : {}),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
@@ -91,10 +93,17 @@ export async function verifyOAuthStateToken(token: string): Promise<OAuthStatePa
     ) {
       return null;
     }
+    const requestedRole =
+      payload.requestedRole === "EV_OPERATOR"
+        ? "EV_OPERATOR"
+        : payload.requestedRole === "CUSTOMER"
+          ? "CUSTOMER"
+          : undefined;
     return {
       state: payload.state,
       codeVerifier: payload.codeVerifier,
       redirectTo: payload.redirectTo,
+      requestedRole,
     };
   } catch {
     return null;

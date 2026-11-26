@@ -5,11 +5,13 @@ import { useEffect, useState } from "react";
 interface GoogleSignInButtonProps {
   redirectTo?: string;
   label?: string;
+  role?: "CUSTOMER" | "EV_OPERATOR";
 }
 
 export function GoogleSignInButton({
   redirectTo = "/dashboard",
   label = "Continue with Google",
+  role,
 }: GoogleSignInButtonProps) {
   const [configured, setConfigured] = useState<boolean | null>(null);
 
@@ -28,7 +30,9 @@ export function GoogleSignInButton({
     };
   }, []);
 
-  const href = `/api/v1/auth/google?redirectTo=${encodeURIComponent(redirectTo)}`;
+  const href = `/api/v1/auth/google?redirectTo=${encodeURIComponent(redirectTo)}${
+    role ? `&role=${encodeURIComponent(role)}` : ""
+  }`;
 
   return (
     <div className="space-y-1.5">
