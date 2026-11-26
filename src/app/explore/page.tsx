@@ -69,6 +69,7 @@ function ExploreContent() {
   const [facilities, setFacilities] = useState<FacilitySearchResultItem[]>([]);
   const [osmStations, setOsmStations] = useState<ExternalEvChargerStation[]>([]);
   const [externalNotice, setExternalNotice] = useState<string | null>(null);
+  const [googleRadiusNotice, setGoogleRadiusNotice] = useState<string | null>(null);
   const [loadingOsm, setLoadingOsm] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
@@ -77,6 +78,7 @@ function ExploreContent() {
   const [sseConnected, setSseConnected] = useState(false);
   const [activeRoute, setActiveRoute] = useState<InAppRoute | null>(null);
   const [navigating, setNavigating] = useState(false);
+  const [googleMapReady, setGoogleMapReady] = useState(false);
   const nearbyAbortRef = useRef<AbortController | null>(null);
 
   const fetchNearbyExternalChargers = useCallback(
@@ -87,6 +89,7 @@ function ExploreContent() {
 
       setLoadingOsm(true);
       setExternalNotice(null);
+      setGoogleRadiusNotice(null);
       try {
         const params = new URLSearchParams({
           lat: String(lat),
@@ -112,19 +115,15 @@ function ExploreContent() {
           return;
         }
         setOsmStations(json.data.stations);
-        const indiaDatasetSource = json.data.sources.indiaOpenDataset;
-        const beeSource = json.data.sources.beeIndiaApi;
+        if (km > 50 && json.data.sources.googlePlaces?.configured) {
+          setGoogleRadiusNotice(
+            "Google Places searches are limited to 50 km; other charger sources use your selected radius."
+          );
+        }
         const osmSource = json.data.sources.openStreetMapOverpass;
-        const ocmSource = json.data.sources.openChargeMap;
-        const googleSource = json.data.sources.googlePlaces;
-        const freeIndiaOk =
-          indiaDatasetSource?.status === "OK" || beeSource?.status === "OK";
 
         if (
           osmSource.status === "UNAVAILABLE" &&
-          ocmSource.status !== "OK" &&
-          googleSource.status !== "OK" &&
-          !freeIndiaOk &&
           json.data.stations.length === 0
         ) {
           // Fallback: try direct browser Overpass GET when Node.js server network/IPv6 cannot reach Overpass
@@ -145,7 +144,9 @@ function ExploreContent() {
               if (browserRes.ok) {
                 const browserJson = (await browserRes.json()) as {
                   elements?: OverpassElement[];
+                  remark?: string;
                 };
+                if (browserJson.remark) continue;
                 const parsed = parseOverpassElementsToStations({
                   elements: browserJson.elements ?? [],
                   lat,
@@ -465,10 +466,23 @@ function ExploreContent() {
     [userLocation, requestUserLocation]
   );
 
-  const visibleOsmStations = !wantEv && wantParking ? [] : osmStations;
+  const googleMapsConfigured =
+    Boolean(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim()) && googleMapReady;
+  const visibleOsmStations = (!wantEv && wantParking ? [] : osmStations).filter(
+    (station) => station.source !== "GOOGLE_PLACES" || googleMapsConfigured
+  );
+  const evStationsVisible = wantEv || !wantParking;
+  const hasHiddenGooglePlaces =
+    evStationsVisible &&
+    !googleMapsConfigured &&
+    osmStations.some((station) => station.source === "GOOGLE_PLACES");
   const comparedFacilities = facilities.filter((f) => compareIds.includes(f.id));
   const showEmptyResults =
-    !loading && !error && facilities.length === 0 && visibleOsmStations.length === 0;
+    !loading &&
+    !error &&
+    !hasHiddenGooglePlaces &&
+    facilities.length === 0 &&
+    visibleOsmStations.length === 0;
 
   return (
     <div className="bg-[#F4F7FB] min-h-screen">
@@ -531,6 +545,24 @@ function ExploreContent() {
           <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
             <AlertCircle className="h-4 w-4 shrink-0" />
             <span>{externalNotice}</span>
+          </div>
+        )}
+        {googleRadiusNotice && (
+          <div
+            role="status"
+            className="flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900"
+          >
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{googleRadiusNotice}</span>
+          </div>
+        )}
+        {hasHiddenGooglePlaces && !process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim() && (
+          <div className="flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>
+              Google Places stations are not shown because the browser Google Maps key is not
+              configured. Add NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to display them on Google Maps.
+            </span>
           </div>
         )}
 
@@ -682,6 +714,7 @@ function ExploreContent() {
             <InteractiveCityMap
               facilities={facilities}
               osmStations={visibleOsmStations}
+              onGoogleMapReady={setGoogleMapReady}
               selectedId={selectedId}
               onSelectFacility={setSelectedId}
               userLocation={userLocation}
@@ -816,22 +849,35 @@ function ExploreContent() {
                               ? "Stale availability"
                               : "Availability unknown"}
                         </span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void handleNavigateToStation({
-                              id: s.id,
-                              name: s.name,
-                              latitude: s.latitude,
-                              longitude: s.longitude,
-                            });
-                          }}
-                          className="inline-flex items-center gap-1 font-bold text-blue-700 hover:underline cursor-pointer"
-                        >
-                          <Navigation className="h-3 w-3" />
-                          Navigate
-                        </button>
+                        {s.source === "GOOGLE_PLACES" ? (
+                          <a
+                            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${s.name} ${s.latitude},${s.longitude}`)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 font-bold text-blue-700 hover:underline"
+                          >
+                            <Navigation className="h-3 w-3" />
+                            Open in Google Maps
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleNavigateToStation({
+                                id: s.id,
+                                name: s.name,
+                                latitude: s.latitude,
+                                longitude: s.longitude,
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 font-bold text-blue-700 hover:underline cursor-pointer"
+                          >
+                            <Navigation className="h-3 w-3" />
+                            Navigate
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}

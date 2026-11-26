@@ -58,6 +58,83 @@ describe("Explore Page Interactions", () => {
     expect(screen.getByText(/No matching hubs found/i)).toBeInTheDocument();
   });
 
+  it("tries browser Overpass when the server source fails and Open Charge Map has no stations", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/v1/facilities")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: { items: [], total: 0, page: 1, pageSize: 20, searchCenter: null },
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.includes("/api/v1/ev-chargers/nearby")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              stations: [],
+              center: { lat: 28.6139, lng: 77.209 },
+              radiusKm: 25,
+              sources: {
+                openChargeMap: {
+                  configured: true,
+                  status: "OK",
+                },
+                openStreetMapOverpass: {
+                  status: "UNAVAILABLE",
+                  message: "Server Overpass unavailable",
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.includes("overpass-api.de/api/interpreter")) {
+        return new Response(
+          JSON.stringify({
+            elements: [
+              {
+                id: 101,
+                lat: 28.614,
+                lon: 77.21,
+                tags: { name: "Nearby Public Charger" },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: {
+        getCurrentPosition: (success: (position: GeolocationPosition) => void) => {
+          success({
+            coords: { latitude: 28.6139, longitude: 77.209 },
+          } as GeolocationPosition);
+        },
+      },
+    });
+
+    render(<ExplorePage />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Allow Location & Find Chargers/i })
+    );
+
+    expect(await screen.findByText(/Public EV Charging Points Within 25 km \(1\)/i))
+      .toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("overpass-api.de/api/interpreter"),
+      expect.any(Object)
+    );
+  });
+
   it("shows API validation error without claiming 'No matching hubs found', and resets filters on Clear All", async () => {
     let failNext = true;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {

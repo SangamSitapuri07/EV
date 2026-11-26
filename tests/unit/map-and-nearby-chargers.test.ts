@@ -169,6 +169,30 @@ describe("Search validation, nearby EV discovery, radius & authenticity", () => 
     expect(result.sources.openStreetMapOverpass.message).toBeTruthy();
   });
 
+  it("treats an Overpass HTTP 200 timeout remark as unavailable and retries the mirror", async () => {
+    const timedOutFetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          remark: "runtime error: Query timed out.",
+          elements: [],
+        }),
+        { status: 200 }
+      )
+    ) as unknown as typeof fetch;
+
+    const result = await discoverNearbyExternalEvChargers({
+      lat: 31.326,
+      lng: 75.576,
+      radiusKm: 99,
+      fetchFn: timedOutFetch,
+    });
+
+    expect(timedOutFetch).toHaveBeenCalledTimes(2);
+    expect(result.stations).toEqual([]);
+    expect(result.sources.openStreetMapOverpass.status).toBe("UNAVAILABLE");
+    expect(result.sources.openStreetMapOverpass.message).toContain("Query timed out");
+  });
+
   it("computes in-app OSRM route or clean fallback without redirecting outside the website", async () => {
     vi.stubGlobal(
       "fetch",
@@ -277,6 +301,36 @@ describe("Search validation, nearby EV discovery, radius & authenticity", () => 
       });
     } finally {
       delete process.env.GOOGLE_PLACES_API_KEY;
+    }
+  });
+
+  it("does not use the browser Google Maps key for server-side Places requests", async () => {
+    const previousPlacesKey = process.env.GOOGLE_PLACES_API_KEY;
+    const previousMapsKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+    delete process.env.GOOGLE_PLACES_API_KEY;
+    process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY = "browser-only-key";
+    const mockFetch = vi.fn(
+      async (_input: RequestInfo | URL) =>
+        new Response(JSON.stringify({ elements: [] }), { status: 200 })
+    );
+
+    try {
+      const result = await discoverNearbyExternalEvChargers({
+        lat: 31.29,
+        lng: 75.57,
+        radiusKm: 25,
+        fetchFn: mockFetch as unknown as typeof fetch,
+      });
+
+      expect(result.sources.googlePlaces.status).toBe("NOT_CONFIGURED");
+      expect(mockFetch.mock.calls.some(([input]) => String(input).includes("places.googleapis.com"))).toBe(
+        false
+      );
+    } finally {
+      if (previousPlacesKey === undefined) delete process.env.GOOGLE_PLACES_API_KEY;
+      else process.env.GOOGLE_PLACES_API_KEY = previousPlacesKey;
+      if (previousMapsKey === undefined) delete process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+      else process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY = previousMapsKey;
     }
   });
 

@@ -84,9 +84,7 @@ export async function discoverNearbyExternalEvChargers(params: {
   const fetchImpl = params.fetchFn ?? fetch;
   const enableLocalDataset = params.includeLocalIndiaDataset ?? !params.fetchFn;
   const enableBeeApi = params.includeBeeIndiaApi ?? !params.fetchFn;
-  const googlePlacesKey = (
-    process.env.GOOGLE_PLACES_API_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
-  )?.trim();
+  const googlePlacesKey = process.env.GOOGLE_PLACES_API_KEY?.trim();
   const ocmKey = process.env.OPEN_CHARGE_MAP_API_KEY?.trim();
   const useCache = !params.fetchFn;
   const cacheKey = `${params.lat.toFixed(3)},${params.lng.toFixed(3)},${params.radiusKm},${Boolean(googlePlacesKey)},${Boolean(ocmKey)}`;
@@ -461,7 +459,15 @@ export async function discoverNearbyExternalEvChargers(params: {
 
         const json = (await res.json()) as {
           elements?: OverpassElement[];
+          remark?: string;
         };
+        if (json.remark) {
+          lastStatus = {
+            status: "UNAVAILABLE",
+            message: `OpenStreetMap Overpass returned an incomplete response: ${json.remark}`,
+          };
+          continue;
+        }
 
         const parsedOsm = parseOverpassElementsToStations({
           elements: json.elements ?? [],
