@@ -69,6 +69,7 @@ function ExploreContent() {
   const [facilities, setFacilities] = useState<FacilitySearchResultItem[]>([]);
   const [osmStations, setOsmStations] = useState<ExternalEvChargerStation[]>([]);
   const [externalNotice, setExternalNotice] = useState<string | null>(null);
+  const [googlePlacesConfigured, setGooglePlacesConfigured] = useState<boolean | null>(null);
   const [loadingOsm, setLoadingOsm] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
@@ -114,13 +115,31 @@ function ExploreContent() {
         setOsmStations(json.data.stations);
         const osmSource = json.data.sources.openStreetMapOverpass;
         const ocmSource = json.data.sources.openChargeMap;
-        if (ocmSource.configured && ocmSource.status === "UNAVAILABLE" && json.data.stations.length === 0) {
+        const googleSource = json.data.sources.googlePlaces;
+        setGooglePlacesConfigured(googleSource.configured);
+
+        if (
+          googleSource.configured &&
+          googleSource.status === "UNAVAILABLE" &&
+          json.data.stations.length === 0
+        ) {
+          setExternalNotice(
+            googleSource.message ||
+              "Google Places API request failed. Verify GOOGLE_PLACES_API_KEY and billing/API enablement."
+          );
+        } else if (
+          ocmSource.configured &&
+          ocmSource.status === "UNAVAILABLE" &&
+          googleSource.status !== "OK" &&
+          json.data.stations.length === 0
+        ) {
           setExternalNotice(
             ocmSource.message || "Open Charge Map API request failed. Check OPEN_CHARGE_MAP_API_KEY."
           );
         } else if (
           osmSource.status === "UNAVAILABLE" &&
           ocmSource.status !== "OK" &&
+          googleSource.status !== "OK" &&
           json.data.stations.length === 0
         ) {
           // Fallback: try direct browser Overpass GET when Node.js server network/IPv6 cannot reach Overpass
@@ -773,7 +792,11 @@ function ExploreContent() {
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-bold text-slate-900 truncate">{s.name}</span>
                         <span className="shrink-0 rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-800">
-                          {s.source === "OPEN_CHARGE_MAP" ? "OCM" : "OSM"}
+                          {s.source === "GOOGLE_PLACES"
+                            ? "Google"
+                            : s.source === "OPEN_CHARGE_MAP"
+                              ? "OCM"
+                              : "OSM"}
                         </span>
                       </div>
                       <div className="text-slate-600">
@@ -782,9 +805,25 @@ function ExploreContent() {
                       {s.address && <div className="text-[11px] text-slate-500">{s.address}</div>}
                       {s.sockets && <div className="text-[11px] text-slate-500">{s.sockets}</div>}
                       <div className="flex items-center justify-between pt-1">
-                        <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">
+                        <span
+                          className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                            s.availabilityStatus === "LIVE"
+                              ? "bg-emerald-50 text-emerald-700"
+                              : s.availabilityStatus === "STALE"
+                                ? "bg-amber-50 text-amber-700"
+                                : "bg-slate-100 text-slate-700"
+                          }`}
+                        >
                           <Clock className="h-2.5 w-2.5" />
-                          Availability unknown
+                          {s.availabilityStatus === "LIVE" &&
+                          s.availableConnectors !== null &&
+                          s.availableConnectors !== undefined &&
+                          s.totalConnectors !== null &&
+                          s.totalConnectors !== undefined
+                            ? `${s.availableConnectors}/${s.totalConnectors} available`
+                            : s.availabilityStatus === "STALE"
+                              ? "Stale availability"
+                              : "Availability unknown"}
                         </span>
                         <button
                           type="button"
@@ -824,6 +863,14 @@ function ExploreContent() {
                   No registered ParkSmart hubs or public EV stations matched your current radius
                   and filters.
                 </p>
+                {googlePlacesConfigured === false && (
+                  <p className="text-[11px] text-slate-500 max-w-lg mx-auto">
+                    OpenStreetMap and Open Charge Map have limited coverage in some cities. Add{" "}
+                    <code className="font-mono">GOOGLE_PLACES_API_KEY</code> in{" "}
+                    <code className="font-mono">.env</code> (Places API New enabled) to include
+                    commercial EV networks like Tata Power, Statiq, and ChargeZone.
+                  </p>
+                )}
                 <Button size="sm" variant="outline" onClick={clearAllFilters}>
                   Reset Filters
                 </Button>

@@ -418,9 +418,11 @@ export function InteractiveCityMap({
               <div className="flex items-center justify-between gap-2">
                 <span className="inline-flex items-center gap-1 rounded bg-teal-50 px-2 py-0.5 text-[10px] font-bold text-teal-800">
                   <Zap className="h-3 w-3" />
-                  {selectedOsm.source === "OPEN_CHARGE_MAP"
-                    ? "Open Charge Map"
-                    : "OpenStreetMap"}
+                  {selectedOsm.source === "GOOGLE_PLACES"
+                    ? "Google Places EV"
+                    : selectedOsm.source === "OPEN_CHARGE_MAP"
+                      ? "Open Charge Map"
+                      : "OpenStreetMap"}
                 </span>
                 <span className="text-[11px] font-semibold text-slate-500">
                   {selectedOsm.distanceKm} km away
@@ -432,12 +434,33 @@ export function InteractiveCityMap({
                   Operator: {selectedOsm.operator}
                 </div>
               )}
+              {selectedOsm.address && (
+                <div className="text-[11px] text-slate-500 line-clamp-2">
+                  {selectedOsm.address}
+                </div>
+              )}
               {selectedOsm.sockets && (
                 <div className="text-[11px] text-slate-600">{selectedOsm.sockets}</div>
               )}
-              <div className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+              <div
+                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-semibold ${
+                  selectedOsm.availabilityStatus === "LIVE"
+                    ? "bg-emerald-50 text-emerald-700"
+                    : selectedOsm.availabilityStatus === "STALE"
+                      ? "bg-amber-50 text-amber-700"
+                      : "bg-slate-100 text-slate-700"
+                }`}
+              >
                 <Clock className="h-3 w-3" />
-                Availability unknown (external map listing)
+                {selectedOsm.availabilityStatus === "LIVE" &&
+                selectedOsm.availableConnectors !== null &&
+                selectedOsm.availableConnectors !== undefined &&
+                selectedOsm.totalConnectors !== null &&
+                selectedOsm.totalConnectors !== undefined
+                  ? `${selectedOsm.availableConnectors}/${selectedOsm.totalConnectors} ports available (Live)`
+                  : selectedOsm.availabilityStatus === "STALE"
+                    ? "Availability stale"
+                    : "Availability unknown (external map listing)"}
               </div>
               <div className="flex items-center justify-between pt-1">
                 {onNavigateToStation && (
