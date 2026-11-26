@@ -102,7 +102,15 @@ function ExploreContent() {
         }
         setOsmStations(json.data.stations);
         const osmSource = json.data.sources.openStreetMapOverpass;
-        if (osmSource.status === "UNAVAILABLE" && json.data.stations.length === 0) {
+        const ocmSource = json.data.sources.openChargeMap;
+        if (ocmSource.configured && ocmSource.status === "UNAVAILABLE" && json.data.stations.length === 0) {
+          setExternalNotice(
+            ocmSource.message || "Open Charge Map API request failed. Check OPEN_CHARGE_MAP_API_KEY."
+          );
+        } else if (
+          osmSource.status === "UNAVAILABLE" &&
+          json.data.stations.length === 0
+        ) {
           // Fallback: try direct browser Overpass GET when Node.js server network/IPv6 cannot reach Overpass
           let browserResolved = false;
           try {

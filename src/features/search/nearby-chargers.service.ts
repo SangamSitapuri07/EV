@@ -189,15 +189,16 @@ export async function discoverNearbyExternalEvChargers(params: {
       url.searchParams.set("distance", String(params.radiusKm));
       url.searchParams.set("distanceunit", "KM");
       url.searchParams.set("maxresults", "25");
-      url.searchParams.set("compact", "true");
+      url.searchParams.set("compact", "false");
       url.searchParams.set("verbose", "false");
       url.searchParams.set("key", ocmKey);
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
+      const timer = setTimeout(() => controller.abort(), 10000);
       const res = await fetchImpl(url.toString(), {
         headers: {
           "User-Agent": "ParkSmart-EV-Finder/1.0",
+          "X-API-Key": ocmKey,
           Accept: "application/json",
         },
         signal: controller.signal,
