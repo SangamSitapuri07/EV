@@ -6,7 +6,6 @@ export interface ExternalEvChargerStation {
   source:
     | "INDIA_OPEN_EV_DATA"
     | "BEE_INDIA_API"
-    | "GOOGLE_PLACES"
     | "OPENSTREETMAP_OVERPASS"
     | "OPEN_CHARGE_MAP";
   name: string;
@@ -40,11 +39,6 @@ export interface NearbyChargersResult {
     };
     beeIndiaApi: {
       status: "OK" | "SKIPPED" | "UNAVAILABLE";
-      message?: string;
-    };
-    googlePlaces: {
-      configured: boolean;
-      status: "OK" | "NOT_CONFIGURED" | "UNAVAILABLE";
       message?: string;
     };
     openChargeMap: {

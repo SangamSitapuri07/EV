@@ -1,5 +1,4 @@
 import { haversineKm } from "@/lib/utils";
-import type { AvailabilityStatus } from "./search.service";
 import {
   isInsideIndiaBounds,
   queryIndiaOpenEvDataset,
@@ -26,18 +25,6 @@ function mapOcmConnectionStandard(title?: string): string | null {
   if (lower.includes("type 2") || lower.includes("mennekes")) return "TYPE2_AC";
   if (lower.includes("chademo")) return "CHADEMO";
   if (lower.includes("gb/t") || lower.includes("gb-t")) return "GB_T";
-  return null;
-}
-
-function mapGoogleConnectorType(rawType?: string): string | null {
-  if (!rawType) return null;
-  const upper = rawType.toUpperCase();
-  if (upper.includes("CCS_COMBO_2")) return "CCS2";
-  if (upper.includes("CCS_COMBO_1")) return "CCS1";
-  if (upper.includes("TYPE_2")) return "TYPE2_AC";
-  if (upper.includes("CHADEMO")) return "CHADEMO";
-  if (upper.includes("J1772")) return "TYPE1_J1772";
-  if (upper.includes("TESLA")) return "TESLA";
   return null;
 }
 
@@ -84,10 +71,9 @@ export async function discoverNearbyExternalEvChargers(params: {
   const fetchImpl = params.fetchFn ?? fetch;
   const enableLocalDataset = params.includeLocalIndiaDataset ?? !params.fetchFn;
   const enableBeeApi = params.includeBeeIndiaApi ?? !params.fetchFn;
-  const googlePlacesKey = process.env.GOOGLE_PLACES_API_KEY?.trim();
   const ocmKey = process.env.OPEN_CHARGE_MAP_API_KEY?.trim();
   const useCache = !params.fetchFn;
-  const cacheKey = `${params.lat.toFixed(3)},${params.lng.toFixed(3)},${params.radiusKm},${Boolean(googlePlacesKey)},${Boolean(ocmKey)}`;
+  const cacheKey = `${params.lat.toFixed(3)},${params.lng.toFixed(3)},${params.radiusKm},${Boolean(ocmKey)}`;
 
   const applyFilters = (raw: ExternalEvChargerStation[]) =>
     raw
@@ -117,168 +103,6 @@ export async function discoverNearbyExternalEvChargers(params: {
       };
     }
   }
-
-  const fetchGooglePlaces = async (): Promise<{
-    stations: ExternalEvChargerStation[];
-    status: NearbyChargersResult["sources"]["googlePlaces"];
-  }> => {
-    if (!googlePlacesKey) {
-      return {
-        stations: [],
-        status: {
-          configured: false,
-          status: "NOT_CONFIGURED",
-          message:
-            "GOOGLE_PLACES_API_KEY is not configured; commercial stations from Google Places are disabled.",
-        },
-      };
-    }
-
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 9000);
-      const res = await fetchImpl("https://places.googleapis.com/v1/places:searchNearby", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": googlePlacesKey,
-          "X-Goog-FieldMask":
-            "places.id,places.displayName,places.formattedAddress,places.location,places.evChargeOptions",
-        },
-        body: JSON.stringify({
-          includedTypes: ["electric_vehicle_charging_station"],
-          maxResultCount: 20,
-          locationRestriction: {
-            circle: {
-              center: { latitude: params.lat, longitude: params.lng },
-              // Google Places searchNearby restricts circle radius to 50,000 meters
-              radius: Math.min(50000, Math.max(500, Math.round(params.radiusKm * 1000))),
-            },
-          },
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-
-      if (!res.ok) {
-        return {
-          stations: [],
-          status: {
-            configured: true,
-            status: "UNAVAILABLE",
-            message: `Google Places API returned HTTP ${res.status}`,
-          },
-        };
-      }
-
-      const json = (await res.json()) as {
-        places?: Array<{
-          id?: string;
-          displayName?: { text?: string };
-          formattedAddress?: string;
-          location?: { latitude?: number; longitude?: number };
-          evChargeOptions?: {
-            connectorCount?: number;
-            connectorAggregation?: Array<{
-              type?: string;
-              maxChargeRateKw?: number;
-              count?: number;
-              availableCount?: number;
-              availabilityLastUpdateTime?: string;
-            }>;
-          };
-        }>;
-      };
-
-      const nowMs = Date.now();
-      const list: ExternalEvChargerStation[] = [];
-      for (const place of json.places ?? []) {
-        const pLat = place.location?.latitude;
-        const pLng = place.location?.longitude;
-        if (
-          typeof pLat !== "number" ||
-          typeof pLng !== "number" ||
-          !Number.isFinite(pLat) ||
-          !Number.isFinite(pLng)
-        ) {
-          continue;
-        }
-        const distanceKm = haversineKm(params.lat, params.lng, pLat, pLng);
-        if (distanceKm > params.radiusKm) continue;
-
-        const aggs = place.evChargeOptions?.connectorAggregation ?? [];
-        const standards = Array.from(
-          new Set(
-            aggs
-              .map((a) => mapGoogleConnectorType(a.type))
-              .filter((x): x is string => x !== null)
-          )
-        );
-        const maxPowerKw = aggs.reduce<number | null>((acc, a) => {
-          if (typeof a.maxChargeRateKw !== "number" || !Number.isFinite(a.maxChargeRateKw)) {
-            return acc;
-          }
-          return acc === null ? a.maxChargeRateKw : Math.max(acc, a.maxChargeRateKw);
-        }, null);
-
-        const totalConn =
-          place.evChargeOptions?.connectorCount ??
-          (aggs.length > 0 ? aggs.reduce((s, a) => s + (a.count ?? 0), 0) : null);
-        const hasAvailCounts = aggs.some((a) => typeof a.availableCount === "number");
-        const availConn = hasAvailCounts
-          ? aggs.reduce((s, a) => s + (a.availableCount ?? 0), 0)
-          : null;
-        const lastUpdate =
-          aggs.find((a) => typeof a.availabilityLastUpdateTime === "string")
-            ?.availabilityLastUpdateTime ?? null;
-        const isStale = lastUpdate ? nowMs - new Date(lastUpdate).getTime() > 15 * 60 * 1000 : false;
-
-        const availabilityStatus: AvailabilityStatus = !hasAvailCounts
-          ? "UNKNOWN"
-          : isStale
-            ? "STALE"
-            : "LIVE";
-
-        list.push({
-          id: `gplaces-${place.id ?? `${pLat}-${pLng}`}`,
-          source: "GOOGLE_PLACES",
-          name: place.displayName?.text?.trim() || "EV Charging Station",
-          operator: null,
-          address: place.formattedAddress ?? null,
-          latitude: pLat,
-          longitude: pLng,
-          distanceKm,
-          connectorStandards: standards,
-          maxPowerKw,
-          sockets:
-            standards.length > 0
-              ? `${standards.join(", ")}${maxPowerKw ? ` · ${Math.round(maxPowerKw)} kW` : ""}`
-              : null,
-          totalConnectors: totalConn,
-          availableConnectors: availConn,
-          ownerVerified: false,
-          stationDocsVerified: false,
-          liveAvailabilityConnected: hasAvailCounts,
-          availabilityStatus,
-          availabilityUpdatedAt: lastUpdate,
-        });
-      }
-
-      return {
-        stations: list,
-        status: { configured: true, status: "OK" },
-      };
-    } catch {
-      return {
-        stations: [],
-        status: {
-          configured: true,
-          status: "UNAVAILABLE",
-          message: "Google Places API request failed or timed out.",
-        },
-      };
-    }
-  };
 
   const fetchOcm = async (): Promise<{
     stations: ExternalEvChargerStation[];
@@ -641,14 +465,12 @@ export async function discoverNearbyExternalEvChargers(params: {
         ? { status: "OK", count: localIndiaResult.stations.length }
         : { status: "UNAVAILABLE", count: 0 };
 
-  const [googleRes, beeIndiaRes, ocmRes, overpassRes] = await Promise.all([
-    fetchGooglePlaces(),
+  const [beeIndiaRes, ocmRes, overpassRes] = await Promise.all([
     fetchBeeIndiaApi(),
     fetchOcm(),
     fetchOverpass(),
   ]);
   const merged = deduplicateStations([
-    ...googleRes.stations,
     ...localIndiaResult.stations,
     ...beeIndiaRes.stations,
     ...ocmRes.stations,
@@ -657,7 +479,6 @@ export async function discoverNearbyExternalEvChargers(params: {
   const sources: NearbyChargersResult["sources"] = {
     indiaOpenDataset: indiaOpenDatasetStatus,
     beeIndiaApi: beeIndiaRes.status,
-    googlePlaces: googleRes.status,
     openChargeMap: ocmRes.status,
     openStreetMapOverpass: overpassRes.status,
   };
@@ -666,7 +487,6 @@ export async function discoverNearbyExternalEvChargers(params: {
     useCache &&
     (indiaOpenDatasetStatus.status === "OK" ||
       beeIndiaRes.status.status === "OK" ||
-      googleRes.status.status === "OK" ||
       ocmRes.status.status === "OK" ||
       overpassRes.status.status === "OK")
   ) {

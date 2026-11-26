@@ -1,10 +1,7 @@
-/// <reference types="google.maps" />
-
 "use client";
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import Script from "next/script";
 import {
   Plus,
   Minus,
@@ -25,18 +22,11 @@ import type { InAppRoute } from "@/lib/in-app-navigation";
 import { formatPaise, getFacilityPhoto } from "@/lib/utils";
 import { Button } from "@/components/ui/primitives";
 
-declare global {
-  interface Window {
-    google: typeof google;
-  }
-}
-
 export type NearbyOsmStation = ExternalEvChargerStation;
 
 interface MapProps {
   facilities: FacilitySearchResultItem[];
   osmStations?: ExternalEvChargerStation[];
-  onGoogleMapReady?: (ready: boolean) => void;
   selectedId: string | null;
   onSelectFacility: (id: string) => void;
   userLocation: { lat: number; lng: number } | null;
@@ -67,7 +57,6 @@ interface MapProps {
 export function InteractiveCityMap({
   facilities,
   osmStations = [],
-  onGoogleMapReady,
   selectedId,
   onSelectFacility,
   userLocation,
@@ -87,20 +76,11 @@ export function InteractiveCityMap({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
   const layerGroupRef = useRef<import("leaflet").LayerGroup | null>(null);
-  const googleMapRef = useRef<google.maps.Map | null>(null);
-  const googleOverlaysRef = useRef<
-    Array<{ setMap(map: google.maps.Map | null): void }>
-  >([]);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [mapReady, setMapReady] = useState(false);
-  const [googleScriptReady, setGoogleScriptReady] = useState(false);
-  const [googleMapReady, setGoogleMapReady] = useState(false);
-  const [googleMapError, setGoogleMapError] = useState<string | null>(null);
   const [promptDismissed, setPromptDismissed] = useState(false);
   const [cityQuery, setCityQuery] = useState("");
   const [geocoding, setGeocoding] = useState(false);
-  const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim() ?? "";
-  const googleMapsEnabled = googleMapsApiKey.length > 0;
 
   const selectedFacility =
     facilities.find((f) => f.id === selectedId) ?? facilities[0] ?? null;
@@ -108,7 +88,6 @@ export function InteractiveCityMap({
 
   // Initialize real Leaflet + OpenStreetMap map in browser
   useEffect(() => {
-    if (googleMapsEnabled) return;
     const el = containerRef.current;
     if (!el || typeof window === "undefined") return;
     if (navigator.userAgent.includes("jsdom")) return;
@@ -153,223 +132,10 @@ export function InteractiveCityMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (!googleMapsEnabled || !googleScriptReady || !containerRef.current) return;
-    if (navigator.userAgent.includes("jsdom")) return;
-
-    let cancelled = false;
-    const frameId = window.requestAnimationFrame(() => {
-      const element = containerRef.current;
-      if (!element || cancelled) return;
-      try {
-        const center = userLocation ?? {
-          lat: facilities[0]?.latitude ?? 20.5937,
-          lng: facilities[0]?.longitude ?? 78.9629,
-        };
-        const map = new window.google.maps.Map(element, {
-          center,
-          zoom: userLocation ? (radiusKm >= 25 ? 11 : 13) : facilities[0] ? 13 : 5,
-          zoomControl: false,
-          mapTypeControl: false,
-          streetViewControl: false,
-          fullscreenControl: false,
-        });
-        googleMapRef.current = map;
-        map.addListener("idle", () => {
-          if (!cancelled) {
-            setGoogleMapReady(true);
-            onGoogleMapReady?.(true);
-          }
-        });
-      } catch (error) {
-        setGoogleMapError(
-          error instanceof Error ? error.message : "Could not initialize Google Maps."
-        );
-        onGoogleMapReady?.(false);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      window.cancelAnimationFrame(frameId);
-      googleOverlaysRef.current.forEach((overlay) => overlay.setMap(null));
-      googleOverlaysRef.current = [];
-      googleMapRef.current = null;
-      onGoogleMapReady?.(false);
-    };
-    // Initialize once when the Google Maps script becomes ready.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [googleMapsEnabled, googleScriptReady]);
-
-  useEffect(() => {
-    const map = googleMapRef.current;
-    if (!googleMapsEnabled || !googleMapReady || !map) return;
-
-    if (activeRoute && activeRoute.coordinates.length >= 2) {
-      const bounds = new window.google.maps.LatLngBounds();
-      activeRoute.coordinates.forEach(([lat, lng]) => bounds.extend({ lat, lng }));
-      map.fitBounds(bounds, 56);
-      return;
-    }
-    if (userLocation) {
-      map.setCenter(userLocation);
-      map.setZoom(radiusKm >= 40 ? 9 : radiusKm >= 18 ? 11 : radiusKm >= 8 ? 12 : 13);
-      return;
-    }
-    if (facilities.length > 0) {
-      const bounds = new window.google.maps.LatLngBounds();
-      facilities.forEach((facility) =>
-        bounds.extend({ lat: facility.latitude, lng: facility.longitude })
-      );
-      if (facilities.length === 1) {
-        map.setCenter({
-          lat: facilities[0]!.latitude,
-          lng: facilities[0]!.longitude,
-        });
-        map.setZoom(13);
-      } else {
-        map.fitBounds(bounds, 48);
-      }
-    }
-  }, [googleMapsEnabled, googleMapReady, activeRoute, userLocation, radiusKm, facilities]);
-
-  useEffect(() => {
-    const map = googleMapRef.current;
-    if (!googleMapsEnabled || !googleMapReady || !map) return;
-
-    const overlays: Array<{ setMap(map: google.maps.Map | null): void }> = [];
-    const addOverlay = <T extends { setMap(map: google.maps.Map | null): void }>(
-      overlay: T
-    ) => {
-      overlays.push(overlay);
-      return overlay;
-    };
-
-    if (userLocation) {
-      addOverlay(
-        new window.google.maps.Circle({
-          map,
-          center: userLocation,
-          radius: Math.min(50_000, Math.max(500, radiusKm * 1000)),
-          strokeColor: "#2563EB",
-          strokeOpacity: 0.75,
-          strokeWeight: 1.5,
-          fillColor: "#3B82F6",
-          fillOpacity: 0.06,
-        })
-      );
-      addOverlay(
-        new window.google.maps.Marker({
-          map,
-          position: userLocation,
-          title: isDefaultLocation ? "Default Center (Not GPS)" : "Your Search Location",
-          icon: {
-            path: window.google.maps.SymbolPath.CIRCLE,
-            scale: 8,
-            fillColor: "#2563EB",
-            fillOpacity: 1,
-            strokeColor: "#FFFFFF",
-            strokeWeight: 3,
-          },
-        })
-      );
-    }
-
-    for (const facility of facilities) {
-      if (showHeatmap) {
-        const occupancy = facility.totalCapacity > 0
-          ? facility.occupiedSpaces / facility.totalCapacity
-          : 0.2;
-        const heatColor =
-          occupancy > 0.7 ? "#EF4444" : occupancy > 0.35 ? "#F59E0B" : "#10B981";
-        addOverlay(
-          new window.google.maps.Circle({
-            map,
-            center: { lat: facility.latitude, lng: facility.longitude },
-            radius: 750,
-            strokeWeight: 0,
-            fillColor: heatColor,
-            fillOpacity: 0.22,
-            clickable: false,
-            zIndex: 0,
-          })
-        );
-      }
-      const isSelected = facility.id === selectedId;
-      const marker = new window.google.maps.Marker({
-        map,
-        position: { lat: facility.latitude, lng: facility.longitude },
-        title: facility.name,
-        label: facility.hasEvCharging ? "⚡" : "P",
-        icon: {
-          path: window.google.maps.SymbolPath.CIRCLE,
-          scale: isSelected ? 17 : 14,
-          fillColor: facility.hasEvCharging ? "#2563EB" : "#059669",
-          fillOpacity: 1,
-          strokeColor: "#FFFFFF",
-          strokeWeight: isSelected ? 3 : 2,
-        },
-        zIndex: isSelected ? 3 : 1,
-      });
-      marker.addListener("click", () => onSelectFacility(facility.id));
-      addOverlay(marker);
-    }
-
-    for (const station of osmStations) {
-      const isSelected = station.id === selectedId;
-      const marker = new window.google.maps.Marker({
-        map,
-        position: { lat: station.latitude, lng: station.longitude },
-        title: station.name,
-        label: "⚡",
-        icon: {
-          path: window.google.maps.SymbolPath.CIRCLE,
-          scale: isSelected ? 16 : 13,
-          fillColor: station.source === "GOOGLE_PLACES" ? "#2563EB" : "#0D9488",
-          fillOpacity: 1,
-          strokeColor: "#FFFFFF",
-          strokeWeight: isSelected ? 3 : 2,
-        },
-        zIndex: isSelected ? 4 : 2,
-      });
-      marker.addListener("click", () => onSelectFacility(station.id));
-      addOverlay(marker);
-    }
-
-    if (activeRoute && activeRoute.coordinates.length >= 2) {
-      addOverlay(
-        new window.google.maps.Polyline({
-          map,
-          path: activeRoute.coordinates.map(([lat, lng]) => ({ lat, lng })),
-          strokeColor: "#1D4ED8",
-          strokeOpacity: 0.9,
-          strokeWeight: 5,
-        })
-      );
-    }
-
-    googleOverlaysRef.current = overlays;
-    return () => {
-      overlays.forEach((overlay) => overlay.setMap(null));
-    };
-  }, [
-    googleMapsEnabled,
-    googleMapReady,
-    facilities,
-    osmStations,
-    selectedId,
-    userLocation,
-    isDefaultLocation,
-    radiusKm,
-    activeRoute,
-    onSelectFacility,
-    showHeatmap,
-  ]);
-
   // Re-center map when route, user location, radius, or facilities update
   useEffect(() => {
     const map = mapRef.current;
-    if (googleMapsEnabled || !mapReady || !map) return;
+    if (!mapReady || !map) return;
 
     if (activeRoute && activeRoute.coordinates.length >= 2 && typeof window !== "undefined") {
       void import("leaflet").then((L) => {
@@ -399,13 +165,13 @@ export function InteractiveCityMap({
         }
       });
     }
-  }, [googleMapsEnabled, mapReady, activeRoute, userLocation, radiusKm, facilities]);
+  }, [mapReady, activeRoute, userLocation, radiusKm, facilities]);
 
-  // Render live pins (user GPS, ParkSmart facilities, OSM/OCM EV chargers, optional heatmap)
+  // Render live pins (user GPS, ParkSmart facilities, India EV / BEE / OSM / OCM EV chargers, optional heatmap)
   useEffect(() => {
     const map = mapRef.current;
     const group = layerGroupRef.current;
-    if (googleMapsEnabled || !mapReady || !map || !group || typeof window === "undefined") return;
+    if (!mapReady || !map || !group || typeof window === "undefined") return;
 
     let cancelled = false;
     void import("leaflet").then((L) => {
@@ -505,7 +271,6 @@ export function InteractiveCityMap({
   }, [
     facilities,
     osmStations,
-    googleMapsEnabled,
     mapReady,
     selectedId,
     userLocation,
@@ -517,19 +282,6 @@ export function InteractiveCityMap({
   ]);
 
   function handleSearchCurrentArea() {
-    if (googleMapsEnabled) {
-      const bounds = googleMapRef.current?.getBounds();
-      if (!bounds) return;
-      const northEast = bounds.getNorthEast();
-      const southWest = bounds.getSouthWest();
-      onSearchBounds({
-        north: northEast.lat(),
-        south: southWest.lat(),
-        east: northEast.lng(),
-        west: southWest.lng(),
-      });
-      return;
-    }
     const map = mapRef.current;
     if (!map) return;
     const b = map.getBounds();
@@ -554,33 +306,8 @@ export function InteractiveCityMap({
 
   return (
     <div className="relative h-[440px] lg:h-[490px] w-full overflow-hidden rounded-2xl border border-slate-200 bg-[#EEF3F8] shadow-xs">
-      {googleMapsEnabled && (
-        <Script
-          src={`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(googleMapsApiKey)}&v=weekly&loading=async`}
-          strategy="afterInteractive"
-          onReady={() => setGoogleScriptReady(true)}
-          onError={() => {
-            setGoogleMapError(
-              "Google Maps failed to load. Check the browser key, billing, and Maps JavaScript API restrictions."
-            );
-            onGoogleMapReady?.(false);
-          }}
-        />
-      )}
+      {/* Real Leaflet OpenStreetMap Canvas */}
       <div ref={containerRef} className="h-full w-full z-0" />
-      {googleMapsEnabled && !googleMapReady && !googleMapError && (
-        <div className="absolute inset-0 z-[300] flex items-center justify-center bg-slate-100/80 text-sm font-semibold text-slate-700">
-          Loading Google Maps…
-        </div>
-      )}
-      {googleMapError && (
-        <div
-          role="alert"
-          className="absolute left-3 right-3 top-14 z-[450] rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-900 shadow"
-        >
-          {googleMapError}
-        </div>
-      )}
 
       {/* Top Left Action Controls */}
       <div className="absolute left-3 top-3 z-[400] flex flex-wrap items-center gap-2">
@@ -699,11 +426,9 @@ export function InteractiveCityMap({
                     ? "India EV Directory"
                     : selectedOsm.source === "BEE_INDIA_API"
                       ? "BEE India EV"
-                      : selectedOsm.source === "GOOGLE_PLACES"
-                        ? "Google Places EV"
-                        : selectedOsm.source === "OPEN_CHARGE_MAP"
-                          ? "Open Charge Map"
-                          : "OpenStreetMap"}
+                      : selectedOsm.source === "OPEN_CHARGE_MAP"
+                        ? "Open Charge Map"
+                        : "OpenStreetMap"}
                 </span>
                 <span className="text-[11px] font-semibold text-slate-500">
                   {selectedOsm.distanceKm} km away
@@ -748,17 +473,7 @@ export function InteractiveCityMap({
                     : "Availability unknown (external map listing)"}
               </div>
               <div className="flex items-center justify-between pt-1">
-                {selectedOsm.source === "GOOGLE_PLACES" ? (
-                  <a
-                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${selectedOsm.name} ${selectedOsm.latitude},${selectedOsm.longitude}`)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 rounded-lg bg-[#0F2942] px-2.5 py-1 text-[11px] font-bold text-white hover:bg-[#173A5E] transition"
-                  >
-                    <Navigation className="h-3 w-3" />
-                    Open in Google Maps
-                  </a>
-                ) : onNavigateToStation ? (
+                {onNavigateToStation && (
                   <button
                     type="button"
                     disabled={navigating}
@@ -775,7 +490,7 @@ export function InteractiveCityMap({
                     <Navigation className="h-3 w-3" />
                     {navigating ? "Routing..." : "Navigate Here"}
                   </button>
-                ) : null}
+                )}
                 {activeRoute && activeRoute.destinationId === selectedOsm.id && onClearRoute && (
                   <button
                     type="button"
@@ -886,11 +601,7 @@ export function InteractiveCityMap({
         <div className="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <button
             type="button"
-            onClick={() =>
-              googleMapsEnabled
-                ? googleMapRef.current?.setZoom((googleMapRef.current.getZoom() ?? 0) + 1)
-                : mapRef.current?.zoomIn()
-            }
+            onClick={() => mapRef.current?.zoomIn()}
             className="flex h-8 w-8 items-center justify-center text-slate-700 hover:bg-slate-50 border-b border-slate-100 cursor-pointer"
             aria-label="Zoom in map"
           >
@@ -898,11 +609,7 @@ export function InteractiveCityMap({
           </button>
           <button
             type="button"
-            onClick={() =>
-              googleMapsEnabled
-                ? googleMapRef.current?.setZoom((googleMapRef.current.getZoom() ?? 0) - 1)
-                : mapRef.current?.zoomOut()
-            }
+            onClick={() => mapRef.current?.zoomOut()}
             className="flex h-8 w-8 items-center justify-center text-slate-700 hover:bg-slate-50 cursor-pointer"
             aria-label="Zoom out map"
           >
