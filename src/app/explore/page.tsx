@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import type { FacilitySearchResultItem } from "@/features/search/search.service";
 import {
+  buildOverpassBboxQuery,
   parseOverpassElementsToStations,
   type ExternalEvChargerStation,
   type NearbyChargersResult,
@@ -119,37 +120,43 @@ function ExploreContent() {
           );
         } else if (
           osmSource.status === "UNAVAILABLE" &&
+          ocmSource.status !== "OK" &&
           json.data.stations.length === 0
         ) {
           // Fallback: try direct browser Overpass GET when Node.js server network/IPv6 cannot reach Overpass
           let browserResolved = false;
-          try {
-            const radiusMeters = Math.min(100000, Math.max(500, Math.round(km * 1000)));
-            const overpassQuery = `[out:json][timeout:6];(node["amenity"="charging_station"](around:${radiusMeters},${lat},${lng});way["amenity"="charging_station"](around:${radiusMeters},${lat},${lng}););out center 80;`;
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 5000);
-            const browserRes = await fetch(
-              `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(overpassQuery)}`,
-              { method: "GET", signal: controller.signal }
-            );
-            clearTimeout(timer);
-            if (browserRes.ok) {
-              const browserJson = (await browserRes.json()) as {
-                elements?: OverpassElement[];
-              };
-              const parsed = parseOverpassElementsToStations({
-                elements: browserJson.elements ?? [],
-                lat,
-                lng,
-                radiusKm: Math.min(100, Math.max(0.5, km)),
-                connectorStandard: connectorStandard || undefined,
-                minPowerKw: minPowerKw ? Number(minPowerKw) : undefined,
-              });
-              setOsmStations(parsed);
-              browserResolved = true;
+          const overpassQuery = buildOverpassBboxQuery(lat, lng, km);
+          for (const endpoint of [
+            "https://overpass-api.de/api/interpreter",
+            "https://overpass.kumi.systems/api/interpreter",
+          ]) {
+            try {
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 8000);
+              const browserRes = await fetch(
+                `${endpoint}?data=${encodeURIComponent(overpassQuery)}`,
+                { method: "GET", signal: controller.signal }
+              );
+              clearTimeout(timer);
+              if (browserRes.ok) {
+                const browserJson = (await browserRes.json()) as {
+                  elements?: OverpassElement[];
+                };
+                const parsed = parseOverpassElementsToStations({
+                  elements: browserJson.elements ?? [],
+                  lat,
+                  lng,
+                  radiusKm: Math.min(100, Math.max(0.5, km)),
+                  connectorStandard: connectorStandard || undefined,
+                  minPowerKw: minPowerKw ? Number(minPowerKw) : undefined,
+                });
+                setOsmStations(parsed);
+                browserResolved = true;
+                break;
+              }
+            } catch {
+              // Try next mirror
             }
-          } catch {
-            // Browser Overpass also unreachable
           }
 
           if (!browserResolved) {

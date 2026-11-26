@@ -90,6 +90,21 @@ export interface OverpassElement {
   tags?: Record<string, string>;
 }
 
+export function buildOverpassBboxQuery(lat: number, lng: number, radiusKm: number): string {
+  const clampedKm = Math.min(100, Math.max(0.5, radiusKm));
+  const latDelta = clampedKm / 111.0;
+  const cosLat = Math.max(0.1, Math.cos((lat * Math.PI) / 180));
+  const lngDelta = clampedKm / (111.0 * cosLat);
+
+  const south = Math.max(-90, lat - latDelta).toFixed(5);
+  const north = Math.min(90, lat + latDelta).toFixed(5);
+  const west = Math.max(-180, lng - lngDelta).toFixed(5);
+  const east = Math.min(180, lng + lngDelta).toFixed(5);
+
+  // Bounding-box queries use Overpass's spatial index and run much faster than around: queries
+  return `[out:json][timeout:8];(node["amenity"="charging_station"](${south},${west},${north},${east});way["amenity"="charging_station"](${south},${west},${north},${east}););out center 80;`;
+}
+
 export function parseOverpassElementsToStations(params: {
   elements: OverpassElement[];
   lat: number;
@@ -361,8 +376,7 @@ export async function discoverNearbyExternalEvChargers(params: {
     stations: ExternalEvChargerStation[];
     status: NearbyChargersResult["sources"]["openStreetMapOverpass"];
   }> => {
-    const radiusMeters = Math.min(100000, Math.max(500, Math.round(params.radiusKm * 1000)));
-    const overpassQuery = `[out:json][timeout:6];(node["amenity"="charging_station"](around:${radiusMeters},${params.lat},${params.lng});way["amenity"="charging_station"](around:${radiusMeters},${params.lat},${params.lng}););out center 80;`;
+    const overpassQuery = buildOverpassBboxQuery(params.lat, params.lng, params.radiusKm);
     const endpoints = [
       "https://overpass-api.de/api/interpreter",
       "https://overpass.kumi.systems/api/interpreter",
@@ -376,7 +390,7 @@ export async function discoverNearbyExternalEvChargers(params: {
     for (const endpoint of endpoints) {
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
+        const timer = setTimeout(() => controller.abort(), 9000);
         const res = await fetchImpl(
           `${endpoint}?data=${encodeURIComponent(overpassQuery)}`,
           {
