@@ -279,4 +279,76 @@ describe("Search validation, nearby EV discovery, radius & authenticity", () => 
       delete process.env.GOOGLE_PLACES_API_KEY;
     }
   });
+
+  it("discovers real commercial Indian EV stations from the free bundled ODbL dataset in Jalandhar with zero API keys", async () => {
+    const result = await discoverNearbyExternalEvChargers({
+      lat: 31.29,
+      lng: 75.57,
+      radiusKm: 25,
+      includeLocalIndiaDataset: true,
+      includeBeeIndiaApi: false,
+      fetchFn: vi.fn(async () => new Response(JSON.stringify({ elements: [] }), { status: 200 })) as unknown as typeof fetch,
+    });
+
+    expect(result.sources.indiaOpenDataset.status).toBe("OK");
+    expect(result.stations.length).toBeGreaterThanOrEqual(5);
+    for (const s of result.stations) {
+      expect(s.source).toBe("INDIA_OPEN_EV_DATA");
+      expect(s.distanceKm).toBeLessThanOrEqual(25);
+      expect(s.ownerVerified).toBe(false);
+      expect(s.liveAvailabilityConnected).toBe(false);
+      expect(s.availabilityStatus).toBe("UNKNOWN");
+    }
+  });
+
+  it("discovers keyless BEE India EV stations when BEE API is enabled", async () => {
+    const mockFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("ev-charging-stations-api.vercel.app")) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            data: [
+              {
+                id: "evs_1234567890",
+                name: "BEE Public Charger Ludhiana",
+                operator: "PSPCL / EESL",
+                address: "Ferozepur Road",
+                city: "Ludhiana",
+                state: "Punjab",
+                latitude: 30.896,
+                longitude: 75.823,
+                max_power_kw: 60,
+                total_chargers: 2,
+                standards: ["CCS2"],
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(JSON.stringify({ elements: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await discoverNearbyExternalEvChargers({
+      lat: 30.9,
+      lng: 75.85,
+      radiusKm: 25,
+      includeLocalIndiaDataset: false,
+      includeBeeIndiaApi: true,
+      fetchFn: mockFetch,
+    });
+
+    expect(result.sources.beeIndiaApi.status).toBe("OK");
+    expect(result.stations).toHaveLength(1);
+    expect(result.stations[0]).toMatchObject({
+      id: "bee-evs_1234567890",
+      source: "BEE_INDIA_API",
+      name: "BEE Public Charger Ludhiana",
+      operator: "PSPCL / EESL",
+      connectorStandards: ["CCS2"],
+      maxPowerKw: 60,
+      availabilityStatus: "UNKNOWN",
+    });
+  });
 });

@@ -22,7 +22,7 @@ import {
   type ExternalEvChargerStation,
   type NearbyChargersResult,
   type OverpassElement,
-} from "@/features/search/nearby-chargers.service";
+} from "@/features/search/nearby-chargers.shared";
 import { computeInAppRoute, type InAppRoute } from "@/lib/in-app-navigation";
 import { InteractiveCityMap } from "@/components/map/interactive-city-map";
 import { Badge, Button, Card, Select, Skeleton } from "@/components/ui/primitives";
@@ -69,7 +69,6 @@ function ExploreContent() {
   const [facilities, setFacilities] = useState<FacilitySearchResultItem[]>([]);
   const [osmStations, setOsmStations] = useState<ExternalEvChargerStation[]>([]);
   const [externalNotice, setExternalNotice] = useState<string | null>(null);
-  const [googlePlacesConfigured, setGooglePlacesConfigured] = useState<boolean | null>(null);
   const [loadingOsm, setLoadingOsm] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
@@ -113,33 +112,19 @@ function ExploreContent() {
           return;
         }
         setOsmStations(json.data.stations);
+        const indiaDatasetSource = json.data.sources.indiaOpenDataset;
+        const beeSource = json.data.sources.beeIndiaApi;
         const osmSource = json.data.sources.openStreetMapOverpass;
         const ocmSource = json.data.sources.openChargeMap;
         const googleSource = json.data.sources.googlePlaces;
-        setGooglePlacesConfigured(googleSource.configured);
+        const freeIndiaOk =
+          indiaDatasetSource?.status === "OK" || beeSource?.status === "OK";
 
         if (
-          googleSource.configured &&
-          googleSource.status === "UNAVAILABLE" &&
-          json.data.stations.length === 0
-        ) {
-          setExternalNotice(
-            googleSource.message ||
-              "Google Places API request failed. Verify GOOGLE_PLACES_API_KEY and billing/API enablement."
-          );
-        } else if (
-          ocmSource.configured &&
-          ocmSource.status === "UNAVAILABLE" &&
-          googleSource.status !== "OK" &&
-          json.data.stations.length === 0
-        ) {
-          setExternalNotice(
-            ocmSource.message || "Open Charge Map API request failed. Check OPEN_CHARGE_MAP_API_KEY."
-          );
-        } else if (
           osmSource.status === "UNAVAILABLE" &&
           ocmSource.status !== "OK" &&
           googleSource.status !== "OK" &&
+          !freeIndiaOk &&
           json.data.stations.length === 0
         ) {
           // Fallback: try direct browser Overpass GET when Node.js server network/IPv6 cannot reach Overpass
@@ -792,15 +777,21 @@ function ExploreContent() {
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-bold text-slate-900 truncate">{s.name}</span>
                         <span className="shrink-0 rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-800">
-                          {s.source === "GOOGLE_PLACES"
-                            ? "Google"
-                            : s.source === "OPEN_CHARGE_MAP"
-                              ? "OCM"
-                              : "OSM"}
+                          {s.source === "INDIA_OPEN_EV_DATA"
+                            ? "India EV"
+                            : s.source === "BEE_INDIA_API"
+                              ? "BEE India"
+                              : s.source === "GOOGLE_PLACES"
+                                ? "Google"
+                                : s.source === "OPEN_CHARGE_MAP"
+                                  ? "OCM"
+                                  : "OSM"}
                         </span>
                       </div>
                       <div className="text-slate-600">
-                        {s.distanceKm} km away {s.operator ? `· ${s.operator}` : ""}
+                        {s.distanceKm} km away
+                        {s.operator ? ` · ${s.operator}` : ""}
+                        {s.pricing ? ` · ${s.pricing}` : ""}
                       </div>
                       {s.address && <div className="text-[11px] text-slate-500">{s.address}</div>}
                       {s.sockets && <div className="text-[11px] text-slate-500">{s.sockets}</div>}
@@ -845,6 +836,11 @@ function ExploreContent() {
                     </div>
                   ))}
                 </div>
+                <p className="text-[11px] text-slate-500 pt-1 border-t border-slate-100">
+                  Public EV directory data: India EV Charging Dataset (ODbL v1.0, 28,553 sites
+                  across ChargeZone, MG eHUB, Kia/Numocity, Ather Grid, Bolt.Earth) · Bureau of
+                  Energy Efficiency (BEE) · OpenStreetMap contributors.
+                </p>
               </Card>
             )}
 
@@ -863,14 +859,6 @@ function ExploreContent() {
                   No registered ParkSmart hubs or public EV stations matched your current radius
                   and filters.
                 </p>
-                {googlePlacesConfigured === false && (
-                  <p className="text-[11px] text-slate-500 max-w-lg mx-auto">
-                    OpenStreetMap and Open Charge Map have limited coverage in some cities. Add{" "}
-                    <code className="font-mono">GOOGLE_PLACES_API_KEY</code> in{" "}
-                    <code className="font-mono">.env</code> (Places API New enabled) to include
-                    commercial EV networks like Tata Power, Statiq, and ChargeZone.
-                  </p>
-                )}
                 <Button size="sm" variant="outline" onClick={clearAllFilters}>
                   Reset Filters
                 </Button>

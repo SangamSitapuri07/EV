@@ -1,177 +1,24 @@
 import { haversineKm } from "@/lib/utils";
 import type { AvailabilityStatus } from "./search.service";
+import {
+  isInsideIndiaBounds,
+  queryIndiaOpenEvDataset,
+} from "./india-ev-dataset";
+import {
+  buildOverpassBboxQuery,
+  parseOverpassElementsToStations,
+  type ExternalEvChargerStation,
+  type NearbyChargersResult,
+  type OverpassElement,
+} from "./nearby-chargers.shared";
 
-export interface ExternalEvChargerStation {
-  id: string;
-  source: "GOOGLE_PLACES" | "OPENSTREETMAP_OVERPASS" | "OPEN_CHARGE_MAP";
-  name: string;
-  operator: string | null;
-  address: string | null;
-  latitude: number;
-  longitude: number;
-  distanceKm: number;
-  connectorStandards: string[];
-  maxPowerKw: number | null;
-  sockets: string | null;
-  totalConnectors?: number | null;
-  availableConnectors?: number | null;
-  ownerVerified: false;
-  stationDocsVerified: false;
-  liveAvailabilityConnected: boolean;
-  availabilityStatus: AvailabilityStatus;
-  availabilityUpdatedAt: string | null;
-}
-
-export interface NearbyChargersResult {
-  stations: ExternalEvChargerStation[];
-  center: { lat: number; lng: number };
-  radiusKm: number;
-  sources: {
-    googlePlaces: {
-      configured: boolean;
-      status: "OK" | "NOT_CONFIGURED" | "UNAVAILABLE";
-      message?: string;
-    };
-    openChargeMap: {
-      configured: boolean;
-      status: "OK" | "NOT_CONFIGURED" | "UNAVAILABLE";
-      message?: string;
-    };
-    openStreetMapOverpass: {
-      status: "OK" | "UNAVAILABLE";
-      message?: string;
-    };
-  };
-}
-
-function normalizeOsmConnectorStandards(tags: Record<string, string>): {
-  standards: string[];
-  maxPowerKw: number | null;
-  summary: string | null;
-} {
-  const standards = new Set<string>();
-  const socketLabels: string[] = [];
-  let maxPowerKw: number | null = null;
-
-  for (const [k, v] of Object.entries(tags)) {
-    if (!k.startsWith("socket:")) continue;
-    const rawKey = k.slice("socket:".length).toLowerCase();
-
-    if (rawKey.includes("type2")) standards.add("TYPE2_AC");
-    else if (rawKey.includes("ccs") || rawKey.includes("combo")) standards.add("CCS2");
-    else if (rawKey.includes("chademo")) standards.add("CHADEMO");
-    else if (rawKey.includes("gb_t") || rawKey.includes("gbt")) standards.add("GB_T");
-
-    if (rawKey.endsWith(":output")) {
-      const kw = parseFloat(v);
-      if (Number.isFinite(kw) && kw > 0) {
-        maxPowerKw = maxPowerKw === null ? kw : Math.max(maxPowerKw, kw);
-      }
-      continue;
-    }
-
-    if (!rawKey.includes(":")) {
-      socketLabels.push(`${rawKey.toUpperCase()} (${v})`);
-    }
-  }
-
-  const summary =
-    socketLabels.length > 0
-      ? `Connectors: ${socketLabels.join(", ")}`
-      : tags.capacity
-        ? `Capacity: ${tags.capacity}`
-        : null;
-
-  return {
-    standards: Array.from(standards),
-    maxPowerKw,
-    summary,
-  };
-}
-
-export interface OverpassElement {
-  id: number;
-  lat?: number;
-  lon?: number;
-  center?: { lat: number; lon: number };
-  tags?: Record<string, string>;
-}
-
-export function buildOverpassBboxQuery(lat: number, lng: number, radiusKm: number): string {
-  const clampedKm = Math.min(100, Math.max(0.5, radiusKm));
-  const latDelta = clampedKm / 111.0;
-  const cosLat = Math.max(0.1, Math.cos((lat * Math.PI) / 180));
-  const lngDelta = clampedKm / (111.0 * cosLat);
-
-  const south = Math.max(-90, lat - latDelta).toFixed(5);
-  const north = Math.min(90, lat + latDelta).toFixed(5);
-  const west = Math.max(-180, lng - lngDelta).toFixed(5);
-  const east = Math.min(180, lng + lngDelta).toFixed(5);
-
-  // Bounding-box queries use Overpass's spatial index and run much faster than around: queries
-  return `[out:json][timeout:8];(node["amenity"="charging_station"](${south},${west},${north},${east});way["amenity"="charging_station"](${south},${west},${north},${east}););out center 80;`;
-}
-
-export function parseOverpassElementsToStations(params: {
-  elements: OverpassElement[];
-  lat: number;
-  lng: number;
-  radiusKm: number;
-  connectorStandard?: string;
-  minPowerKw?: number;
-}): ExternalEvChargerStation[] {
-  const stations: ExternalEvChargerStation[] = [];
-  for (const el of params.elements) {
-    const pLat = el.lat ?? el.center?.lat;
-    const pLng = el.lon ?? el.center?.lon;
-    if (
-      typeof pLat !== "number" ||
-      typeof pLng !== "number" ||
-      !Number.isFinite(pLat) ||
-      !Number.isFinite(pLng)
-    ) {
-      continue;
-    }
-    const distanceKm = haversineKm(params.lat, params.lng, pLat, pLng);
-    if (distanceKm > params.radiusKm) continue;
-
-    const tags = el.tags ?? {};
-    const { standards, maxPowerKw, summary } = normalizeOsmConnectorStandards(tags);
-    const addrParts = [
-      tags["addr:street"],
-      tags["addr:city"] || tags["addr:town"] || tags["addr:suburb"],
-    ].filter(Boolean);
-
-    if (params.connectorStandard) {
-      if (standards.length === 0 || !standards.includes(params.connectorStandard)) {
-        continue;
-      }
-    }
-    if (params.minPowerKw !== undefined && params.minPowerKw > 0) {
-      if (maxPowerKw === null || maxPowerKw < params.minPowerKw) continue;
-    }
-
-    stations.push({
-      id: `osm-${el.id}`,
-      source: "OPENSTREETMAP_OVERPASS",
-      name: tags.name || tags.operator || "Public EV Charging Station",
-      operator: tags.operator || null,
-      address: addrParts.length > 0 ? addrParts.join(", ") : null,
-      latitude: pLat,
-      longitude: pLng,
-      distanceKm,
-      connectorStandards: standards,
-      maxPowerKw,
-      sockets: summary,
-      ownerVerified: false,
-      stationDocsVerified: false,
-      liveAvailabilityConnected: false,
-      availabilityStatus: "UNKNOWN",
-      availabilityUpdatedAt: null,
-    });
-  }
-  return stations.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 60);
-}
+export {
+  buildOverpassBboxQuery,
+  parseOverpassElementsToStations,
+  type ExternalEvChargerStation,
+  type NearbyChargersResult,
+  type OverpassElement,
+};
 function mapOcmConnectionStandard(title?: string): string | null {
   if (!title) return null;
   const lower = title.toLowerCase();
@@ -191,6 +38,18 @@ function mapGoogleConnectorType(rawType?: string): string | null {
   if (upper.includes("CHADEMO")) return "CHADEMO";
   if (upper.includes("J1772")) return "TYPE1_J1772";
   if (upper.includes("TESLA")) return "TESLA";
+  return null;
+}
+
+function mapBeeConnectorStandard(raw?: string): string | null {
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  if (upper.includes("CCS")) return "CCS2";
+  if (upper.includes("TYPE_2") || upper.includes("TYPE2")) return "TYPE2_AC";
+  if (upper.includes("CHADEMO")) return "CHADEMO";
+  if (upper.includes("GB_T") || upper.includes("GBT")) return "GB_T";
+  if (upper.includes("BHARAT_DC") || upper.includes("DC001")) return "BHARAT_DC001";
+  if (upper.includes("BHARAT_AC") || upper.includes("AC001")) return "BHARAT_AC001";
   return null;
 }
 
@@ -219,8 +78,12 @@ export async function discoverNearbyExternalEvChargers(params: {
   connectorStandard?: string;
   minPowerKw?: number;
   fetchFn?: typeof fetch;
+  includeLocalIndiaDataset?: boolean;
+  includeBeeIndiaApi?: boolean;
 }): Promise<NearbyChargersResult> {
   const fetchImpl = params.fetchFn ?? fetch;
+  const enableLocalDataset = params.includeLocalIndiaDataset ?? !params.fetchFn;
+  const enableBeeApi = params.includeBeeIndiaApi ?? !params.fetchFn;
   const googlePlacesKey = (
     process.env.GOOGLE_PLACES_API_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
   )?.trim();
@@ -622,18 +485,172 @@ export async function discoverNearbyExternalEvChargers(params: {
     return { stations: [], status: lastStatus };
   };
 
-  // Fetch Google Places, OCM, and Overpass in parallel
-  const [googleRes, ocmRes, overpassRes] = await Promise.all([
+  const fetchBeeIndiaApi = async (): Promise<{
+    stations: ExternalEvChargerStation[];
+    status: NearbyChargersResult["sources"]["beeIndiaApi"];
+  }> => {
+    if (!enableBeeApi || !isInsideIndiaBounds(params.lat, params.lng)) {
+      return {
+        stations: [],
+        status: {
+          status: "SKIPPED",
+          message: !enableBeeApi
+            ? "Skipped in mock fetch mode."
+            : "Coordinates outside India; BEE India directory skipped.",
+        },
+      };
+    }
+
+    try {
+      const url = new URL("https://ev-charging-stations-api.vercel.app/v1/stations/near");
+      url.searchParams.set("lat", String(params.lat));
+      url.searchParams.set("lng", String(params.lng));
+      url.searchParams.set("radius", String(Math.min(100, Math.max(0.5, params.radiusKm))));
+      url.searchParams.set("limit", "60");
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const res = await fetchImpl(url.toString(), {
+        method: "GET",
+        headers: {
+          "User-Agent": "ParkSmart-EV-Finder/1.0",
+          Accept: "application/json",
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (!res.ok) {
+        return {
+          stations: [],
+          status: {
+            status: "UNAVAILABLE",
+            message: `BEE India EV API returned HTTP ${res.status}`,
+          },
+        };
+      }
+
+      const json = (await res.json()) as {
+        success?: boolean;
+        data?: Array<{
+          id?: string;
+          name?: string;
+          operator?: string;
+          address?: string;
+          city?: string;
+          state?: string;
+          latitude?: number;
+          longitude?: number;
+          max_power_kw?: number;
+          total_chargers?: number;
+          standards?: string[];
+        }>;
+      };
+
+      const list: ExternalEvChargerStation[] = [];
+      for (const item of json.data ?? []) {
+        const pLat = item.latitude;
+        const pLng = item.longitude;
+        if (
+          typeof pLat !== "number" ||
+          typeof pLng !== "number" ||
+          !Number.isFinite(pLat) ||
+          !Number.isFinite(pLng)
+        ) {
+          continue;
+        }
+        const distanceKm = haversineKm(params.lat, params.lng, pLat, pLng);
+        if (distanceKm > params.radiusKm) continue;
+
+        const standards = Array.from(
+          new Set(
+            (item.standards ?? [])
+              .map((s) => mapBeeConnectorStandard(s))
+              .filter((x): x is string => x !== null)
+          )
+        );
+        const maxPowerKw =
+          typeof item.max_power_kw === "number" && Number.isFinite(item.max_power_kw)
+            ? item.max_power_kw
+            : null;
+
+        const addrParts = [item.address, item.city, item.state].filter(Boolean);
+        list.push({
+          id: `bee-${item.id ?? `${pLat}-${pLng}`}`,
+          source: "BEE_INDIA_API",
+          name: item.name?.trim() || item.operator?.trim() || "Public EV Charging Station",
+          operator: item.operator?.trim() || null,
+          address: addrParts.length > 0 ? addrParts.join(", ") : null,
+          latitude: pLat,
+          longitude: pLng,
+          distanceKm,
+          connectorStandards: standards,
+          maxPowerKw,
+          sockets:
+            standards.length > 0
+              ? `${standards.join(", ")}${maxPowerKw ? ` · ${Math.round(maxPowerKw)} kW` : ""}`
+              : maxPowerKw
+                ? `Up to ${Math.round(maxPowerKw)} kW`
+                : null,
+          totalConnectors:
+            typeof item.total_chargers === "number" ? item.total_chargers : null,
+          sourcesLabel: "BEE (Ministry of Power)",
+          ownerVerified: false,
+          stationDocsVerified: false,
+          liveAvailabilityConnected: false,
+          availabilityStatus: "UNKNOWN",
+          availabilityUpdatedAt: null,
+        });
+      }
+
+      return {
+        stations: list,
+        status: { status: "OK" },
+      };
+    } catch {
+      return {
+        stations: [],
+        status: {
+          status: "UNAVAILABLE",
+          message: "BEE India free EV API could not be reached.",
+        },
+      };
+    }
+  };
+
+  // Query local 28,553-station India Open EV Dataset + free online feeds in parallel
+  const localIndiaResult =
+    enableLocalDataset && isInsideIndiaBounds(params.lat, params.lng)
+      ? queryIndiaOpenEvDataset({
+          lat: params.lat,
+          lng: params.lng,
+          radiusKm: params.radiusKm,
+        })
+      : { stations: [], totalIndexed: 0 };
+
+  const indiaOpenDatasetStatus: NearbyChargersResult["sources"]["indiaOpenDataset"] =
+    !enableLocalDataset || !isInsideIndiaBounds(params.lat, params.lng)
+      ? { status: "SKIPPED", count: 0 }
+      : localIndiaResult.totalIndexed > 0
+        ? { status: "OK", count: localIndiaResult.stations.length }
+        : { status: "UNAVAILABLE", count: 0 };
+
+  const [googleRes, beeIndiaRes, ocmRes, overpassRes] = await Promise.all([
     fetchGooglePlaces(),
+    fetchBeeIndiaApi(),
     fetchOcm(),
     fetchOverpass(),
   ]);
   const merged = deduplicateStations([
     ...googleRes.stations,
+    ...localIndiaResult.stations,
+    ...beeIndiaRes.stations,
     ...ocmRes.stations,
     ...overpassRes.stations,
   ]);
   const sources: NearbyChargersResult["sources"] = {
+    indiaOpenDataset: indiaOpenDatasetStatus,
+    beeIndiaApi: beeIndiaRes.status,
     googlePlaces: googleRes.status,
     openChargeMap: ocmRes.status,
     openStreetMapOverpass: overpassRes.status,
@@ -641,7 +658,9 @@ export async function discoverNearbyExternalEvChargers(params: {
 
   if (
     useCache &&
-    (googleRes.status.status === "OK" ||
+    (indiaOpenDatasetStatus.status === "OK" ||
+      beeIndiaRes.status.status === "OK" ||
+      googleRes.status.status === "OK" ||
       ocmRes.status.status === "OK" ||
       overpassRes.status.status === "OK")
   ) {

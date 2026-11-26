@@ -17,7 +17,7 @@ import {
   Clock,
 } from "lucide-react";
 import type { FacilitySearchResultItem } from "@/features/search/search.service";
-import type { ExternalEvChargerStation } from "@/features/search/nearby-chargers.service";
+import type { ExternalEvChargerStation } from "@/features/search/nearby-chargers.shared";
 import type { InAppRoute } from "@/lib/in-app-navigation";
 import { formatPaise, getFacilityPhoto } from "@/lib/utils";
 import { Button } from "@/components/ui/primitives";
@@ -418,11 +418,15 @@ export function InteractiveCityMap({
               <div className="flex items-center justify-between gap-2">
                 <span className="inline-flex items-center gap-1 rounded bg-teal-50 px-2 py-0.5 text-[10px] font-bold text-teal-800">
                   <Zap className="h-3 w-3" />
-                  {selectedOsm.source === "GOOGLE_PLACES"
-                    ? "Google Places EV"
-                    : selectedOsm.source === "OPEN_CHARGE_MAP"
-                      ? "Open Charge Map"
-                      : "OpenStreetMap"}
+                  {selectedOsm.source === "INDIA_OPEN_EV_DATA"
+                    ? "India EV Directory"
+                    : selectedOsm.source === "BEE_INDIA_API"
+                      ? "BEE India EV"
+                      : selectedOsm.source === "GOOGLE_PLACES"
+                        ? "Google Places EV"
+                        : selectedOsm.source === "OPEN_CHARGE_MAP"
+                          ? "Open Charge Map"
+                          : "OpenStreetMap"}
                 </span>
                 <span className="text-[11px] font-semibold text-slate-500">
                   {selectedOsm.distanceKm} km away
@@ -432,7 +436,11 @@ export function InteractiveCityMap({
               {selectedOsm.operator && (
                 <div className="text-[11px] text-slate-600">
                   Operator: {selectedOsm.operator}
+                  {selectedOsm.pricing ? ` · ${selectedOsm.pricing}` : ""}
                 </div>
+              )}
+              {!selectedOsm.operator && selectedOsm.pricing && (
+                <div className="text-[11px] text-slate-600">Tariff: {selectedOsm.pricing}</div>
               )}
               {selectedOsm.address && (
                 <div className="text-[11px] text-slate-500 line-clamp-2">
