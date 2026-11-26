@@ -11,6 +11,8 @@ import {
   Layers,
   Zap,
   ExternalLink,
+  Search,
+  X,
 } from "lucide-react";
 import type { FacilitySearchResultItem } from "@/features/search/search.service";
 import { formatPaise, getFacilityPhoto } from "@/lib/utils";
@@ -32,6 +34,8 @@ interface MapProps {
   selectedId: string | null;
   onSelectFacility: (id: string) => void;
   userLocation: { lat: number; lng: number } | null;
+  locationStatus?: "idle" | "prompting" | "granted" | "denied";
+  locationError?: string | null;
   onSearchBounds: (bounds: {
     north: number;
     south: number;
@@ -39,6 +43,7 @@ interface MapProps {
     west: number;
   }) => void;
   onLocateUser: () => void;
+  onResolveCityQuery?: (query: string) => Promise<void>;
 }
 
 export function InteractiveCityMap({
@@ -47,13 +52,19 @@ export function InteractiveCityMap({
   selectedId,
   onSelectFacility,
   userLocation,
+  locationStatus = "idle",
+  locationError,
   onSearchBounds,
   onLocateUser,
+  onResolveCityQuery,
 }: MapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
   const layerGroupRef = useRef<import("leaflet").LayerGroup | null>(null);
   const [showHeatmap, setShowHeatmap] = useState(false);
+  const [promptDismissed, setPromptDismissed] = useState(false);
+  const [cityQuery, setCityQuery] = useState("");
+  const [geocoding, setGeocoding] = useState(false);
 
   const selectedFacility =
     facilities.find((f) => f.id === selectedId) ?? facilities[0] ?? null;
@@ -63,7 +74,6 @@ export function InteractiveCityMap({
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof window === "undefined") return;
-    // Skip Leaflet DOM mounting inside jsdom unit tests where layout dimensions are 0
     if (navigator.userAgent.includes("jsdom")) return;
 
     let cancelled = false;
@@ -71,8 +81,8 @@ export function InteractiveCityMap({
     void import("leaflet").then((L) => {
       if (cancelled || !el || mapRef.current) return;
 
-      const centerLat = userLocation?.lat ?? facilities[0]?.latitude ?? 20.5937;
-      const centerLng = userLocation?.lng ?? facilities[0]?.longitude ?? 78.9629;
+      const centerLat = userLocation?.lat ?? facilities[0]?.latitude ?? 22.9734;
+      const centerLng = userLocation?.lng ?? facilities[0]?.longitude ?? 78.6569;
       const initialZoom = userLocation || facilities[0] ? 13 : 5;
 
       const map = L.map(el, {
@@ -100,16 +110,32 @@ export function InteractiveCityMap({
         layerGroupRef.current = null;
       }
     };
-    // Mount map once; updates handled in subsequent effect
+    // Mount map once; subsequent view updates handled below
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-center map when user location updates
+  // Re-center map when user location updates or when facilities arrive without userLocation
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !userLocation) return;
-    map.setView([userLocation.lat, userLocation.lng], 13, { animate: true });
-  }, [userLocation]);
+    if (!map) return;
+
+    if (userLocation) {
+      map.setView([userLocation.lat, userLocation.lng], 13, { animate: true });
+      return;
+    }
+
+    if (facilities.length > 0 && typeof window !== "undefined") {
+      void import("leaflet").then((L) => {
+        if (!mapRef.current) return;
+        const pts = facilities.map((f) => [f.latitude, f.longitude] as [number, number]);
+        if (pts.length === 1) {
+          mapRef.current.setView(pts[0]!, 13);
+        } else {
+          mapRef.current.fitBounds(L.latLngBounds(pts), { padding: [48, 48], maxZoom: 13 });
+        }
+      });
+    }
+  }, [userLocation, facilities]);
 
   // Render live pins (user GPS, ParkSmart facilities, OSM EV chargers, optional heatmap)
   useEffect(() => {
@@ -212,6 +238,17 @@ export function InteractiveCityMap({
     });
   }
 
+  async function handleCitySubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!cityQuery.trim() || !onResolveCityQuery) return;
+    setGeocoding(true);
+    try {
+      await onResolveCityQuery(cityQuery.trim());
+    } finally {
+      setGeocoding(false);
+    }
+  }
+
   return (
     <div className="relative h-[440px] lg:h-[490px] w-full overflow-hidden rounded-2xl border border-slate-200 bg-[#EEF3F8] shadow-xs">
       {/* Real Leaflet OpenStreetMap Canvas */}
@@ -244,6 +281,70 @@ export function InteractiveCityMap({
           {showHeatmap ? "Heatmap On" : "Occupancy Heatmap"}
         </Button>
       </div>
+
+      {/* Prominent In-Map Location Permission Prompt when userLocation is not yet active */}
+      {!userLocation && !promptDismissed && (
+        <div className="absolute right-3 top-14 sm:top-3 z-[450] w-80 max-w-[calc(100%-1.5rem)] rounded-2xl border border-blue-200 bg-white/95 backdrop-blur p-4 shadow-xl space-y-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-600 shrink-0">
+                <LocateFixed className="h-4 w-4" />
+              </span>
+              <div>
+                <div className="text-xs font-extrabold text-slate-900">
+                  Allow Location Access
+                </div>
+                <div className="text-[11px] text-slate-600">
+                  Find real EV charging points near you
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPromptDismissed(true)}
+              className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 cursor-pointer"
+              aria-label="Dismiss location prompt"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          {locationError && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-1.5 text-[11px] text-amber-900">
+              {locationError}
+            </div>
+          )}
+
+          <Button
+            type="button"
+            size="sm"
+            variant="primary"
+            className="w-full"
+            onClick={onLocateUser}
+            disabled={locationStatus === "prompting"}
+          >
+            <LocateFixed className="h-3.5 w-3.5" />
+            {locationStatus === "prompting"
+              ? "Waiting for browser permission..."
+              : "Share My Current Location"}
+          </Button>
+
+          {onResolveCityQuery && (
+            <form onSubmit={handleCitySubmit} className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
+              <input
+                type="text"
+                value={cityQuery}
+                onChange={(e) => setCityQuery(e.target.value)}
+                placeholder="Or enter city / area..."
+                className="flex-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none"
+              />
+              <Button type="submit" size="sm" variant="outline" disabled={geocoding}>
+                <Search className="h-3.5 w-3.5" />
+              </Button>
+            </form>
+          )}
+        </div>
+      )}
 
       {/* Selected Pin Floating Callout Card */}
       {(selectedFacility || selectedOsm) && (
@@ -299,7 +400,10 @@ export function InteractiveCityMap({
                     <strong className="text-slate-900">
                       {formatPaise(selectedFacility.hourlyRatePaise)}
                     </strong>
-                    /hr · {selectedFacility.distanceKm} km
+                    /hr ·{" "}
+                    {userLocation
+                      ? `${selectedFacility.distanceKm} km`
+                      : selectedFacility.city}
                   </div>
                   <div className="mt-1 flex items-center justify-between">
                     <span className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">
@@ -319,7 +423,7 @@ export function InteractiveCityMap({
         </div>
       )}
 
-      {/* Accessible Pin Selector Strip (ensures keyboard & screen-reader pin access) */}
+      {/* Accessible Pin Selector Strip */}
       <div className="sr-only">
         {facilities.map((f) => (
           <button

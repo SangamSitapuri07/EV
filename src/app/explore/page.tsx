@@ -40,9 +40,11 @@ function ExploreContent() {
     west: number;
   } | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [locationLabel, setLocationLabel] = useState<string | null>(null);
   const [locationStatus, setLocationStatus] = useState<
     "idle" | "prompting" | "granted" | "denied"
   >("idle");
+  const [locationError, setLocationError] = useState<string | null>(null);
 
   const [facilities, setFacilities] = useState<FacilitySearchResultItem[]>([]);
   const [osmStations, setOsmStations] = useState<NearbyOsmStation[]>([]);
@@ -58,17 +60,13 @@ function ExploreContent() {
       setLoadingOsm(true);
       try {
         const radiusMeters = Math.min(25000, Math.max(3000, Math.round(km * 1000)));
-        const overpassQuery = `[out:json][timeout:8];(node["amenity"="charging_station"](around:${radiusMeters},${lat},${lng});way["amenity"="charging_station"](around:${radiusMeters},${lat},${lng}););out center 25;`;
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 7000);
-        const res = await fetch("https://overpass-api.de/api/interpreter", {
-          method: "POST",
-          body: overpassQuery,
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        if (!res.ok) return;
-        const json = (await res.json()) as {
+        const overpassQuery = `[out:json][timeout:10];(node["amenity"="charging_station"](around:${radiusMeters},${lat},${lng});way["amenity"="charging_station"](around:${radiusMeters},${lat},${lng}););out center 25;`;
+        const endpoints = [
+          "https://overpass-api.de/api/interpreter",
+          "https://overpass.kumi.systems/api/interpreter",
+        ];
+
+        let json: {
           elements?: Array<{
             id: number;
             lat?: number;
@@ -76,7 +74,29 @@ function ExploreContent() {
             center?: { lat: number; lon: number };
             tags?: Record<string, string>;
           }>;
-        };
+        } | null = null;
+
+        for (const endpoint of endpoints) {
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 8000);
+            const res = await fetch(endpoint, {
+              method: "POST",
+              body: overpassQuery,
+              signal: controller.signal,
+            });
+            clearTimeout(timer);
+            if (res.ok) {
+              json = await res.json();
+              break;
+            }
+          } catch {
+            // Try next mirror
+          }
+        }
+
+        if (!json) return;
+
         const items: NearbyOsmStation[] = (json.elements ?? [])
           .map((el) => {
             const pLat = el.lat ?? el.center?.lat;
@@ -94,7 +114,10 @@ function ExploreContent() {
               latitude: pLat,
               longitude: pLng,
               distanceKm: haversineKm(lat, lng, pLat, pLng),
-              sockets: socketList || tags.capacity ? `Sockets: ${socketList || tags.capacity}` : undefined,
+              sockets:
+                socketList || tags.capacity
+                  ? `Sockets: ${socketList || tags.capacity}`
+                  : undefined,
             };
           })
           .filter((x): x is NonNullable<typeof x> => x !== null)
@@ -110,12 +133,52 @@ function ExploreContent() {
     []
   );
 
+  const resolveCityQuery = useCallback(
+    async (query: string) => {
+      setLocationError(null);
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(
+            query
+          )}`
+        );
+        const rows = (await res.json()) as Array<{
+          lat: string;
+          lon: string;
+          display_name: string;
+        }>;
+        if (!rows.length) {
+          setLocationError(`Could not find "${query}". Try a city or landmark name.`);
+          return;
+        }
+        const coords = { lat: Number(rows[0]!.lat), lng: Number(rows[0]!.lon) };
+        setUserLocation(coords);
+        setLocationLabel(rows[0]!.display_name.split(",").slice(0, 2).join(", "));
+        setLocationStatus("granted");
+        setBounds(null);
+        await fetchNearbyOsmChargers(coords.lat, coords.lng, Number(radiusKm) || 15);
+      } catch {
+        setLocationError("Could not look up that location right now.");
+      }
+    },
+    [fetchNearbyOsmChargers, radiusKm]
+  );
+
   const requestUserLocation = useCallback(() => {
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      setLocationStatus("denied");
+      setLocationError(
+        "Browser GPS requires https:// or http://localhost. Enter your city/area below to find nearby EV chargers."
+      );
+      return;
+    }
     if (typeof navigator === "undefined" || !navigator.geolocation) {
       setLocationStatus("denied");
+      setLocationError("Geolocation is not supported in this browser. Enter your city below.");
       return;
     }
     setLocationStatus("prompting");
+    setLocationError(null);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const coords = {
@@ -123,28 +186,41 @@ function ExploreContent() {
           lng: pos.coords.longitude,
         };
         setUserLocation(coords);
+        setLocationLabel(null);
         setLocationStatus("granted");
+        setLocationError(null);
         setError(null);
+        setBounds(null);
         void fetchNearbyOsmChargers(coords.lat, coords.lng, Number(radiusKm) || 15);
       },
-      () => {
+      (geoErr) => {
         setLocationStatus("denied");
-        setError(
-          "Location access was declined. Allow location in your browser to see EV charging stations right around you."
-        );
+        if (geoErr.code === geoErr.PERMISSION_DENIED) {
+          setLocationError(
+            "Location permission was blocked or declined. Allow location in browser site settings, or enter your city below."
+          );
+        } else {
+          setLocationError(
+            "Could not detect GPS coordinates. Try again or enter your city/area below."
+          );
+        }
       },
-      { enableHighAccuracy: true, timeout: 10000 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
     );
   }, [fetchNearbyOsmChargers, radiusKm]);
 
-  // Ask for live location when user opens Explore Map
+  // Prompt browser geolocation automatically when Explore opens (if browser permission allows)
   useEffect(() => {
     if (typeof window === "undefined" || navigator.userAgent.includes("jsdom")) return;
     const timer = setTimeout(() => {
-      requestUserLocation();
-    }, 200);
+      if (q.trim()) {
+        void resolveCityQuery(q.trim());
+      } else {
+        requestUserLocation();
+      }
+    }, 150);
     return () => clearTimeout(timer);
-    // Only prompt automatically once on mount
+    // Only run once on mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -269,11 +345,14 @@ function ExploreContent() {
             <div>
               {locationStatus === "granted" && userLocation ? (
                 <span>
-                  <strong className="text-slate-900">Live GPS Active:</strong> Showing EV charging points near{" "}
+                  <strong className="text-slate-900">
+                    {locationLabel ? `Location: ${locationLabel}` : "Live GPS Active"}:
+                  </strong>{" "}
+                  Showing EV charging points near{" "}
                   <span className="font-mono">
                     {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
                   </span>{" "}
-                  ({osmStations.length} public OSM chargers + {facilities.length} ParkSmart hubs)
+                  ({osmStations.length} live OSM chargers + {facilities.length} ParkSmart hubs)
                 </span>
               ) : locationStatus === "prompting" ? (
                 <span>Requesting your GPS location to find nearby EV charging points...</span>
@@ -446,8 +525,11 @@ function ExploreContent() {
               selectedId={selectedId}
               onSelectFacility={setSelectedId}
               userLocation={userLocation}
+              locationStatus={locationStatus}
+              locationError={locationError}
               onSearchBounds={(b) => setBounds(b)}
               onLocateUser={requestUserLocation}
+              onResolveCityQuery={resolveCityQuery}
             />
 
             {/* Nearby Live OpenStreetMap EV Charging Points (when user location is shared) */}
@@ -553,7 +635,7 @@ function ExploreContent() {
                             <strong className="text-slate-900">
                               {formatPaise(fac.hourlyRatePaise)}
                             </strong>
-                            /hr · {fac.distanceKm} km
+                            /hr · {userLocation ? `${fac.distanceKm} km` : fac.city}
                           </div>
                           <div className="text-xs font-semibold text-emerald-700">
                             {fac.availableSpaces}/{fac.totalCapacity} Available

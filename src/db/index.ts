@@ -156,6 +156,8 @@ export async function ensureDatabaseReady(): Promise<DbState> {
       const { seedIfEmpty } = await import("./seed-data");
       await seedIfEmpty(state.db);
     } else {
+      // Remove any previously auto-seeded sample/dummy records from older runs so only real data exists
+      await purgeLeftoverSeedData(state);
       // Production / real mode: ensure pricing policy row exists without seeding any dummy data
       await state.db
         .insert(schema.platformSettings)
@@ -173,6 +175,96 @@ export async function ensureDatabaseReady(): Promise<DbState> {
     globalForDb.__smartMobilitySeeded = true;
   }
   return state;
+}
+
+async function purgeLeftoverSeedData(state: DbState): Promise<void> {
+  const check = await state.rawQuery<{ cnt: string | number }>(
+    `SELECT (
+       (SELECT COUNT(*) FROM facilities WHERE slug IN (
+         'sarabha-nagar-central-plaza',
+         'pau-gate-1-greencharge',
+         'ferozepur-road-volt-superhub',
+         'model-town-gol-market',
+         'civil-lines-pavilion'
+       ))
+       +
+       (SELECT COUNT(*) FROM users WHERE email LIKE '%@smartmobility.test')
+     ) AS cnt`
+  );
+  const totalDummy = Number(check[0]?.cnt ?? 0);
+  if (totalDummy === 0) return;
+
+  await state.rawExec(`
+    WITH dummy_users AS (
+      SELECT id FROM users WHERE email LIKE '%@smartmobility.test'
+    ),
+    dummy_ops AS (
+      SELECT id FROM operators
+      WHERE owner_user_id IN (SELECT id FROM dummy_users)
+         OR contact_email LIKE '%@smartmobility.test'
+    ),
+    dummy_facs AS (
+      SELECT id FROM facilities
+      WHERE slug IN (
+        'sarabha-nagar-central-plaza',
+        'pau-gate-1-greencharge',
+        'ferozepur-road-volt-superhub',
+        'model-town-gol-market',
+        'civil-lines-pavilion'
+      )
+      OR operator_id IN (SELECT id FROM dummy_ops)
+    ),
+    dummy_res AS (
+      SELECT id FROM reservations
+      WHERE facility_id IN (SELECT id FROM dummy_facs)
+         OR user_id IN (SELECT id FROM dummy_users)
+    ),
+    dummy_orders AS (
+      SELECT id FROM payment_orders
+      WHERE reservation_id IN (SELECT id FROM dummy_res)
+         OR user_id IN (SELECT id FROM dummy_users)
+    ),
+    dummy_payments AS (
+      SELECT id FROM payments
+      WHERE reservation_id IN (SELECT id FROM dummy_res)
+         OR payment_order_id IN (SELECT id FROM dummy_orders)
+    )
+    DELETE FROM refunds WHERE payment_id IN (SELECT id FROM dummy_payments) OR reservation_id IN (SELECT id FROM dummy_res);
+    WITH dummy_users AS (SELECT id FROM users WHERE email LIKE '%@smartmobility.test'),
+         dummy_ops AS (SELECT id FROM operators WHERE owner_user_id IN (SELECT id FROM dummy_users) OR contact_email LIKE '%@smartmobility.test'),
+         dummy_facs AS (SELECT id FROM facilities WHERE slug IN ('sarabha-nagar-central-plaza','pau-gate-1-greencharge','ferozepur-road-volt-superhub','model-town-gol-market','civil-lines-pavilion') OR operator_id IN (SELECT id FROM dummy_ops)),
+         dummy_res AS (SELECT id FROM reservations WHERE facility_id IN (SELECT id FROM dummy_facs) OR user_id IN (SELECT id FROM dummy_users))
+    DELETE FROM payments WHERE reservation_id IN (SELECT id FROM dummy_res);
+    WITH dummy_users AS (SELECT id FROM users WHERE email LIKE '%@smartmobility.test'),
+         dummy_ops AS (SELECT id FROM operators WHERE owner_user_id IN (SELECT id FROM dummy_users) OR contact_email LIKE '%@smartmobility.test'),
+         dummy_facs AS (SELECT id FROM facilities WHERE slug IN ('sarabha-nagar-central-plaza','pau-gate-1-greencharge','ferozepur-road-volt-superhub','model-town-gol-market','civil-lines-pavilion') OR operator_id IN (SELECT id FROM dummy_ops)),
+         dummy_res AS (SELECT id FROM reservations WHERE facility_id IN (SELECT id FROM dummy_facs) OR user_id IN (SELECT id FROM dummy_users))
+    DELETE FROM payment_orders WHERE reservation_id IN (SELECT id FROM dummy_res) OR user_id IN (SELECT id FROM dummy_users);
+    WITH dummy_users AS (SELECT id FROM users WHERE email LIKE '%@smartmobility.test'),
+         dummy_ops AS (SELECT id FROM operators WHERE owner_user_id IN (SELECT id FROM dummy_users) OR contact_email LIKE '%@smartmobility.test'),
+         dummy_facs AS (SELECT id FROM facilities WHERE slug IN ('sarabha-nagar-central-plaza','pau-gate-1-greencharge','ferozepur-road-volt-superhub','model-town-gol-market','civil-lines-pavilion') OR operator_id IN (SELECT id FROM dummy_ops)),
+         dummy_res AS (SELECT id FROM reservations WHERE facility_id IN (SELECT id FROM dummy_facs) OR user_id IN (SELECT id FROM dummy_users))
+    DELETE FROM parking_sessions WHERE reservation_id IN (SELECT id FROM dummy_res) OR facility_id IN (SELECT id FROM dummy_facs) OR user_id IN (SELECT id FROM dummy_users);
+    WITH dummy_users AS (SELECT id FROM users WHERE email LIKE '%@smartmobility.test'),
+         dummy_ops AS (SELECT id FROM operators WHERE owner_user_id IN (SELECT id FROM dummy_users) OR contact_email LIKE '%@smartmobility.test'),
+         dummy_facs AS (SELECT id FROM facilities WHERE slug IN ('sarabha-nagar-central-plaza','pau-gate-1-greencharge','ferozepur-road-volt-superhub','model-town-gol-market','civil-lines-pavilion') OR operator_id IN (SELECT id FROM dummy_ops)),
+         dummy_res AS (SELECT id FROM reservations WHERE facility_id IN (SELECT id FROM dummy_facs) OR user_id IN (SELECT id FROM dummy_users))
+    DELETE FROM charging_sessions WHERE reservation_id IN (SELECT id FROM dummy_res) OR facility_id IN (SELECT id FROM dummy_facs) OR user_id IN (SELECT id FROM dummy_users);
+    WITH dummy_users AS (SELECT id FROM users WHERE email LIKE '%@smartmobility.test'),
+         dummy_ops AS (SELECT id FROM operators WHERE owner_user_id IN (SELECT id FROM dummy_users) OR contact_email LIKE '%@smartmobility.test'),
+         dummy_facs AS (SELECT id FROM facilities WHERE slug IN ('sarabha-nagar-central-plaza','pau-gate-1-greencharge','ferozepur-road-volt-superhub','model-town-gol-market','civil-lines-pavilion') OR operator_id IN (SELECT id FROM dummy_ops))
+    DELETE FROM reservations WHERE facility_id IN (SELECT id FROM dummy_facs) OR user_id IN (SELECT id FROM dummy_users);
+    WITH dummy_users AS (SELECT id FROM users WHERE email LIKE '%@smartmobility.test'),
+         dummy_ops AS (SELECT id FROM operators WHERE owner_user_id IN (SELECT id FROM dummy_users) OR contact_email LIKE '%@smartmobility.test'),
+         dummy_facs AS (SELECT id FROM facilities WHERE slug IN ('sarabha-nagar-central-plaza','pau-gate-1-greencharge','ferozepur-road-volt-superhub','model-town-gol-market','civil-lines-pavilion') OR operator_id IN (SELECT id FROM dummy_ops))
+    DELETE FROM facilities WHERE id IN (SELECT id FROM dummy_facs);
+    WITH dummy_users AS (SELECT id FROM users WHERE email LIKE '%@smartmobility.test')
+    DELETE FROM operators WHERE owner_user_id IN (SELECT id FROM dummy_users) OR contact_email LIKE '%@smartmobility.test';
+    UPDATE platform_settings SET updated_by_user_id = NULL
+    WHERE updated_by_user_id IN (SELECT id FROM users WHERE email LIKE '%@smartmobility.test');
+    DELETE FROM audit_logs WHERE actor_user_id IN (SELECT id FROM users WHERE email LIKE '%@smartmobility.test');
+    DELETE FROM users WHERE email LIKE '%@smartmobility.test';
+  `);
 }
 
 export async function resetDbForTests(): Promise<void> {
