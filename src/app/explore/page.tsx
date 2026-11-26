@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -76,9 +76,14 @@ function ExploreContent() {
   const [sseConnected, setSseConnected] = useState(false);
   const [activeRoute, setActiveRoute] = useState<InAppRoute | null>(null);
   const [navigating, setNavigating] = useState(false);
+  const nearbyAbortRef = useRef<AbortController | null>(null);
 
   const fetchNearbyExternalChargers = useCallback(
     async (lat: number, lng: number, km: number) => {
+      nearbyAbortRef.current?.abort();
+      const abortCtrl = new AbortController();
+      nearbyAbortRef.current = abortCtrl;
+
       setLoadingOsm(true);
       setExternalNotice(null);
       try {
@@ -90,7 +95,9 @@ function ExploreContent() {
         if (connectorStandard) params.set("connectorStandard", connectorStandard);
         if (minPowerKw) params.set("minPowerKw", minPowerKw);
 
-        const res = await fetch(`/api/v1/ev-chargers/nearby?${params.toString()}`);
+        const res = await fetch(`/api/v1/ev-chargers/nearby?${params.toString()}`, {
+          signal: abortCtrl.signal,
+        });
         const json = (await res.json()) as {
           ok: boolean;
           data?: NearbyChargersResult;
@@ -117,10 +124,10 @@ function ExploreContent() {
           // Fallback: try direct browser Overpass GET when Node.js server network/IPv6 cannot reach Overpass
           let browserResolved = false;
           try {
-            const radiusMeters = Math.min(25000, Math.max(500, Math.round(km * 1000)));
-            const overpassQuery = `[out:json][timeout:12];(node["amenity"="charging_station"](around:${radiusMeters},${lat},${lng});way["amenity"="charging_station"](around:${radiusMeters},${lat},${lng}););out center 40;`;
+            const radiusMeters = Math.min(100000, Math.max(500, Math.round(km * 1000)));
+            const overpassQuery = `[out:json][timeout:6];(node["amenity"="charging_station"](around:${radiusMeters},${lat},${lng});way["amenity"="charging_station"](around:${radiusMeters},${lat},${lng}););out center 80;`;
             const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 10000);
+            const timer = setTimeout(() => controller.abort(), 5000);
             const browserRes = await fetch(
               `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(overpassQuery)}`,
               { method: "GET", signal: controller.signal }
@@ -152,11 +159,16 @@ function ExploreContent() {
             );
           }
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
         setOsmStations([]);
         setExternalNotice("Network error while fetching nearby EV charging points.");
       } finally {
-        setLoadingOsm(false);
+        if (!abortCtrl.signal.aborted) {
+          setLoadingOsm(false);
+        }
       }
     },
     [connectorStandard, minPowerKw]
@@ -293,7 +305,7 @@ function ExploreContent() {
         userLocation.lng,
         Number(radiusKm) || 25
       );
-    }, 150);
+    }, 350);
     return () => clearTimeout(timer);
   }, [userLocation, radiusKm, wantEv, wantParking, fetchNearbyExternalChargers]);
 
@@ -741,7 +753,7 @@ function ExploreContent() {
                   {loadingOsm && <span className="text-xs text-slate-500">Scanning area...</span>}
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {visibleOsmStations.slice(0, 9).map((s) => (
+                  {visibleOsmStations.slice(0, 30).map((s) => (
                     <div
                       key={s.id}
                       onClick={() => setSelectedId(s.id)}

@@ -148,7 +148,7 @@ export function parseOverpassElementsToStations(params: {
       availabilityUpdatedAt: null,
     });
   }
-  return stations.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 25);
+  return stations.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 60);
 }
 function mapOcmConnectionStandard(title?: string): string | null {
   if (!title) return null;
@@ -160,6 +160,24 @@ function mapOcmConnectionStandard(title?: string): string | null {
   return null;
 }
 
+const nearbyCache = new Map<
+  string,
+  { expiresAt: number; rawStations: ExternalEvChargerStation[]; sources: NearbyChargersResult["sources"] }
+>();
+
+function deduplicateStations(stations: ExternalEvChargerStation[]): ExternalEvChargerStation[] {
+  const unique: ExternalEvChargerStation[] = [];
+  for (const candidate of stations) {
+    const duplicate = unique.some(
+      (existing) =>
+        haversineKm(existing.latitude, existing.longitude, candidate.latitude, candidate.longitude) <
+        0.08
+    );
+    if (!duplicate) unique.push(candidate);
+  }
+  return unique;
+}
+
 export async function discoverNearbyExternalEvChargers(params: {
   lat: number;
   lng: number;
@@ -169,18 +187,55 @@ export async function discoverNearbyExternalEvChargers(params: {
   fetchFn?: typeof fetch;
 }): Promise<NearbyChargersResult> {
   const fetchImpl = params.fetchFn ?? fetch;
-  const stations: ExternalEvChargerStation[] = [];
   const ocmKey = process.env.OPEN_CHARGE_MAP_API_KEY?.trim();
+  const useCache = !params.fetchFn;
+  const cacheKey = `${params.lat.toFixed(3)},${params.lng.toFixed(3)},${params.radiusKm},${Boolean(ocmKey)}`;
 
-  let ocmStatus: NearbyChargersResult["sources"]["openChargeMap"] = {
-    configured: Boolean(ocmKey),
-    status: ocmKey ? "OK" : "NOT_CONFIGURED",
-    message: ocmKey
-      ? undefined
-      : "OPEN_CHARGE_MAP_API_KEY is not configured; using OpenStreetMap Overpass public data.",
-  };
+  const applyFilters = (raw: ExternalEvChargerStation[]) =>
+    raw
+      .filter((s) => {
+        if (params.connectorStandard && s.connectorStandards.length > 0) {
+          if (!s.connectorStandards.includes(params.connectorStandard)) return false;
+        }
+        if (params.connectorStandard && s.connectorStandards.length === 0) {
+          return false;
+        }
+        if (params.minPowerKw !== undefined && params.minPowerKw > 0) {
+          if (s.maxPowerKw === null || s.maxPowerKw < params.minPowerKw) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => a.distanceKm - b.distanceKm)
+      .slice(0, 60);
 
-  if (ocmKey) {
+  if (useCache) {
+    const cached = nearbyCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return {
+        stations: applyFilters(cached.rawStations),
+        center: { lat: params.lat, lng: params.lng },
+        radiusKm: params.radiusKm,
+        sources: cached.sources,
+      };
+    }
+  }
+
+  const fetchOcm = async (): Promise<{
+    stations: ExternalEvChargerStation[];
+    status: NearbyChargersResult["sources"]["openChargeMap"];
+  }> => {
+    if (!ocmKey) {
+      return {
+        stations: [],
+        status: {
+          configured: false,
+          status: "NOT_CONFIGURED",
+          message:
+            "OPEN_CHARGE_MAP_API_KEY is not configured; using OpenStreetMap Overpass public data.",
+        },
+      };
+    }
+
     try {
       const url = new URL("https://api.openchargemap.io/v3/poi/");
       url.searchParams.set("output", "json");
@@ -188,13 +243,13 @@ export async function discoverNearbyExternalEvChargers(params: {
       url.searchParams.set("longitude", String(params.lng));
       url.searchParams.set("distance", String(params.radiusKm));
       url.searchParams.set("distanceunit", "KM");
-      url.searchParams.set("maxresults", "25");
+      url.searchParams.set("maxresults", "100");
       url.searchParams.set("compact", "false");
       url.searchParams.set("verbose", "false");
       url.searchParams.set("key", ocmKey);
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10000);
+      const timer = setTimeout(() => controller.abort(), 8000);
       const res = await fetchImpl(url.toString(), {
         headers: {
           "User-Agent": "ParkSmart-EV-Finder/1.0",
@@ -206,175 +261,189 @@ export async function discoverNearbyExternalEvChargers(params: {
       clearTimeout(timer);
 
       if (!res.ok) {
-        ocmStatus = {
+        return {
+          stations: [],
+          status: {
+            configured: true,
+            status: "UNAVAILABLE",
+            message: `Open Charge Map returned HTTP ${res.status}`,
+          },
+        };
+      }
+
+      const pois = (await res.json()) as Array<{
+        ID: number;
+        DateLastStatusUpdate?: string;
+        AddressInfo?: {
+          Title?: string;
+          AddressLine1?: string;
+          Town?: string;
+          Latitude?: number;
+          Longitude?: number;
+        };
+        OperatorInfo?: { Title?: string };
+        Connections?: Array<{
+          PowerKW?: number;
+          ConnectionType?: { Title?: string };
+        }>;
+      }>;
+
+      const list: ExternalEvChargerStation[] = [];
+      for (const poi of pois) {
+        const pLat = poi.AddressInfo?.Latitude;
+        const pLng = poi.AddressInfo?.Longitude;
+        if (
+          typeof pLat !== "number" ||
+          typeof pLng !== "number" ||
+          !Number.isFinite(pLat) ||
+          !Number.isFinite(pLng)
+        ) {
+          continue;
+        }
+        const distanceKm = haversineKm(params.lat, params.lng, pLat, pLng);
+        if (distanceKm > params.radiusKm) continue;
+
+        const standards = Array.from(
+          new Set(
+            (poi.Connections ?? [])
+              .map((c) => mapOcmConnectionStandard(c.ConnectionType?.Title))
+              .filter((x): x is string => x !== null)
+          )
+        );
+        const maxPowerKw = (poi.Connections ?? []).reduce<number | null>((acc, c) => {
+          if (typeof c.PowerKW !== "number" || !Number.isFinite(c.PowerKW)) return acc;
+          return acc === null ? c.PowerKW : Math.max(acc, c.PowerKW);
+        }, null);
+
+        list.push({
+          id: `ocm-${poi.ID}`,
+          source: "OPEN_CHARGE_MAP",
+          name: poi.AddressInfo?.Title?.trim() || "Public EV Charging Station",
+          operator: poi.OperatorInfo?.Title?.trim() || null,
+          address:
+            [poi.AddressInfo?.AddressLine1, poi.AddressInfo?.Town]
+              .filter(Boolean)
+              .join(", ") || null,
+          latitude: pLat,
+          longitude: pLng,
+          distanceKm,
+          connectorStandards: standards,
+          maxPowerKw,
+          sockets:
+            standards.length > 0
+              ? `Connectors: ${standards.join(", ")}${maxPowerKw ? ` (up to ${maxPowerKw} kW)` : ""}`
+              : null,
+          ownerVerified: false,
+          stationDocsVerified: false,
+          liveAvailabilityConnected: false,
+          availabilityStatus: "UNKNOWN",
+          availabilityUpdatedAt: poi.DateLastStatusUpdate ?? null,
+        });
+      }
+
+      return {
+        stations: list,
+        status: { configured: true, status: "OK" },
+      };
+    } catch {
+      return {
+        stations: [],
+        status: {
           configured: true,
           status: "UNAVAILABLE",
-          message: `Open Charge Map returned HTTP ${res.status}`,
-        };
-      } else {
-        const pois = (await res.json()) as Array<{
-          ID: number;
-          DateLastStatusUpdate?: string;
-          AddressInfo?: {
-            Title?: string;
-            AddressLine1?: string;
-            Town?: string;
-            Latitude?: number;
-            Longitude?: number;
-          };
-          OperatorInfo?: { Title?: string };
-          Connections?: Array<{
-            PowerKW?: number;
-            ConnectionType?: { Title?: string };
-          }>;
-        }>;
-
-        for (const poi of pois) {
-          const pLat = poi.AddressInfo?.Latitude;
-          const pLng = poi.AddressInfo?.Longitude;
-          if (
-            typeof pLat !== "number" ||
-            typeof pLng !== "number" ||
-            !Number.isFinite(pLat) ||
-            !Number.isFinite(pLng)
-          ) {
-            continue;
-          }
-          const distanceKm = haversineKm(params.lat, params.lng, pLat, pLng);
-          if (distanceKm > params.radiusKm) continue;
-
-          const standards = Array.from(
-            new Set(
-              (poi.Connections ?? [])
-                .map((c) => mapOcmConnectionStandard(c.ConnectionType?.Title))
-                .filter((x): x is string => x !== null)
-            )
-          );
-          const maxPowerKw = (poi.Connections ?? []).reduce<number | null>((acc, c) => {
-            if (typeof c.PowerKW !== "number" || !Number.isFinite(c.PowerKW)) return acc;
-            return acc === null ? c.PowerKW : Math.max(acc, c.PowerKW);
-          }, null);
-
-          stations.push({
-            id: `ocm-${poi.ID}`,
-            source: "OPEN_CHARGE_MAP",
-            name: poi.AddressInfo?.Title?.trim() || "Public EV Charging Station",
-            operator: poi.OperatorInfo?.Title?.trim() || null,
-            address:
-              [poi.AddressInfo?.AddressLine1, poi.AddressInfo?.Town]
-                .filter(Boolean)
-                .join(", ") || null,
-            latitude: pLat,
-            longitude: pLng,
-            distanceKm,
-            connectorStandards: standards,
-            maxPowerKw,
-            sockets:
-              standards.length > 0
-                ? `Connectors: ${standards.join(", ")}${maxPowerKw ? ` (up to ${maxPowerKw} kW)` : ""}`
-                : null,
-            ownerVerified: false,
-            stationDocsVerified: false,
-            liveAvailabilityConnected: false,
-            availabilityStatus: "UNKNOWN",
-            availabilityUpdatedAt: poi.DateLastStatusUpdate ?? null,
-          });
-        }
-      }
-    } catch {
-      ocmStatus = {
-        configured: true,
-        status: "UNAVAILABLE",
-        message: "Open Charge Map request failed or timed out.",
+          message: "Open Charge Map request failed or timed out.",
+        },
       };
     }
-  }
-
-  // OpenStreetMap Overpass public charging_station query
-  let overpassStatus: NearbyChargersResult["sources"]["openStreetMapOverpass"] = {
-    status: "UNAVAILABLE",
-    message: "OpenStreetMap Overpass API could not be reached.",
   };
 
-  const radiusMeters = Math.min(25000, Math.max(500, Math.round(params.radiusKm * 1000)));
-  const overpassQuery = `[out:json][timeout:12];(node["amenity"="charging_station"](around:${radiusMeters},${params.lat},${params.lng});way["amenity"="charging_station"](around:${radiusMeters},${params.lat},${params.lng}););out center 40;`;
-  const endpoints = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-  ];
+  const fetchOverpass = async (): Promise<{
+    stations: ExternalEvChargerStation[];
+    status: NearbyChargersResult["sources"]["openStreetMapOverpass"];
+  }> => {
+    const radiusMeters = Math.min(100000, Math.max(500, Math.round(params.radiusKm * 1000)));
+    const overpassQuery = `[out:json][timeout:6];(node["amenity"="charging_station"](around:${radiusMeters},${params.lat},${params.lng});way["amenity"="charging_station"](around:${radiusMeters},${params.lat},${params.lng}););out center 80;`;
+    const endpoints = [
+      "https://overpass-api.de/api/interpreter",
+      "https://overpass.kumi.systems/api/interpreter",
+    ];
 
-  for (const endpoint of endpoints) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 12000);
-      const res = await fetchImpl(
-        `${endpoint}?data=${encodeURIComponent(overpassQuery)}`,
-        {
-          method: "GET",
-          headers: {
-            "User-Agent": "ParkSmart-EV-Finder/1.0",
-            Accept: "application/json",
-          },
-          signal: controller.signal,
+    let lastStatus: NearbyChargersResult["sources"]["openStreetMapOverpass"] = {
+      status: "UNAVAILABLE",
+      message: "OpenStreetMap Overpass API could not be reached.",
+    };
+
+    for (const endpoint of endpoints) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        const res = await fetchImpl(
+          `${endpoint}?data=${encodeURIComponent(overpassQuery)}`,
+          {
+            method: "GET",
+            headers: {
+              "User-Agent": "ParkSmart-EV-Finder/1.0",
+              Accept: "application/json",
+            },
+            signal: controller.signal,
+          }
+        );
+        clearTimeout(timer);
+
+        if (!res.ok) {
+          lastStatus = {
+            status: "UNAVAILABLE",
+            message: `OpenStreetMap Overpass returned HTTP ${res.status}`,
+          };
+          continue;
         }
-      );
-      clearTimeout(timer);
 
-      if (!res.ok) {
-        overpassStatus = {
-          status: "UNAVAILABLE",
-          message: `OpenStreetMap Overpass returned HTTP ${res.status}`,
+        const json = (await res.json()) as {
+          elements?: OverpassElement[];
         };
-        continue;
+
+        const parsedOsm = parseOverpassElementsToStations({
+          elements: json.elements ?? [],
+          lat: params.lat,
+          lng: params.lng,
+          radiusKm: params.radiusKm,
+        });
+
+        return {
+          stations: parsedOsm,
+          status: { status: "OK" },
+        };
+      } catch {
+        lastStatus = {
+          status: "UNAVAILABLE",
+          message: "Could not reach OpenStreetMap Overpass API from the server.",
+        };
       }
-
-      const json = (await res.json()) as {
-        elements?: OverpassElement[];
-      };
-
-      const parsedOsm = parseOverpassElementsToStations({
-        elements: json.elements ?? [],
-        lat: params.lat,
-        lng: params.lng,
-        radiusKm: params.radiusKm,
-      });
-      stations.push(...parsedOsm);
-
-      overpassStatus = { status: "OK" };
-      break;
-    } catch {
-      overpassStatus = {
-        status: "UNAVAILABLE",
-        message: "Could not reach OpenStreetMap Overpass API from the server.",
-      };
     }
+
+    return { stations: [], status: lastStatus };
+  };
+
+  // Fetch OCM and Overpass in parallel so OCM results are never delayed by Overpass timeouts
+  const [ocmRes, overpassRes] = await Promise.all([fetchOcm(), fetchOverpass()]);
+  const merged = deduplicateStations([...ocmRes.stations, ...overpassRes.stations]);
+  const sources: NearbyChargersResult["sources"] = {
+    openChargeMap: ocmRes.status,
+    openStreetMapOverpass: overpassRes.status,
+  };
+
+  if (useCache && (ocmRes.status.status === "OK" || overpassRes.status.status === "OK")) {
+    nearbyCache.set(cacheKey, {
+      expiresAt: Date.now() + 60_000,
+      rawStations: merged,
+      sources,
+    });
   }
 
-  // Apply optional connector / power filters
-  const filtered = stations
-    .filter((s) => {
-      if (params.connectorStandard && s.connectorStandards.length > 0) {
-        if (!s.connectorStandards.includes(params.connectorStandard)) return false;
-      }
-      if (params.connectorStandard && s.connectorStandards.length === 0) {
-        return false;
-      }
-      if (params.minPowerKw !== undefined && params.minPowerKw > 0) {
-        if (s.maxPowerKw === null || s.maxPowerKw < params.minPowerKw) return false;
-      }
-      return true;
-    })
-    .sort((a, b) => a.distanceKm - b.distanceKm)
-    .slice(0, 25);
-
   return {
-    stations: filtered,
+    stations: applyFilters(merged),
     center: { lat: params.lat, lng: params.lng },
     radiusKm: params.radiusKm,
-    sources: {
-      openChargeMap: ocmStatus,
-      openStreetMapOverpass: overpassStatus,
-    },
+    sources,
   };
 }
