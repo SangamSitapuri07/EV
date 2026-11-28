@@ -164,7 +164,23 @@ export default function CustomerDashboardPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<
     "overview" | "preorder" | "bookings" | "charging" | "vehicles" | "payments" | "notifications" | "support"
-  >("overview");
+  >(() => {
+    if (typeof window !== "undefined") {
+      const t = new URLSearchParams(window.location.search).get("tab");
+      if (
+        t === "preorder" ||
+        t === "bookings" ||
+        t === "charging" ||
+        t === "vehicles" ||
+        t === "payments" ||
+        t === "notifications" ||
+        t === "support"
+      ) {
+        return t;
+      }
+    }
+    return "overview";
+  });
   const [qrPreview, setQrPreview] = useState<{ ref: string; url: string; raw: string } | null>(
     null
   );
@@ -248,7 +264,6 @@ export default function CustomerDashboardPage() {
         endTime: end.toISOString(),
         standard: standardFilter,
       });
-      if (pumpQuery.trim()) params.set("q", pumpQuery.trim());
       const res = await fetch(`/api/v1/ev-pumps?${params.toString()}`);
       const json = await res.json();
       if (json.ok) {
@@ -257,7 +272,7 @@ export default function CustomerDashboardPage() {
     } finally {
       setPumpsLoading(false);
     }
-  }, [slotStartLocal, slotDurationHours, standardFilter, pumpQuery]);
+  }, [slotStartLocal, slotDurationHours, standardFilter]);
 
   const loadNearbyChargers = useCallback(
     async (lat: number, lng: number, km: number, standard?: string) => {
@@ -1037,42 +1052,54 @@ export default function CustomerDashboardPage() {
                     </div>
                   </div>
 
-                  {pumps.length > 0 ? (
-                    <div className="grid gap-3 md:grid-cols-2">
-                      {pumps.slice(0, 2).map((pump) => (
-                        <div
-                          key={pump.stationId}
-                          className="rounded-xl border border-slate-200 p-4 space-y-2.5"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="font-bold text-sm text-slate-900">{pump.stationName}</div>
-                            <Badge variant={pump.freeCount > 0 ? "success" : "danger"}>
-                              {pump.freeCount}/{pump.totalCount} Free
-                            </Badge>
+                  {pumps.length > 0 && (
+                    <div className="space-y-2.5">
+                      <div className="text-xs font-bold text-slate-700">
+                        Bookable ParkSmart EV Pumps (Instant Pre-Order &amp; Live Owner Sync)
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {pumps.slice(0, 2).map((pump) => (
+                          <div
+                            key={pump.stationId}
+                            className="rounded-xl border border-emerald-200 bg-emerald-50/30 p-4 space-y-2.5"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="font-bold text-sm text-slate-900">
+                                  {pump.stationName}
+                                </span>
+                                {pump.isSimulated && <Badge variant="warning">Demo Hub</Badge>}
+                              </div>
+                              <Badge variant={pump.freeCount > 0 ? "success" : "danger"}>
+                                {pump.freeCount}/{pump.totalCount} Free
+                              </Badge>
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              {pump.addressLine1}, {pump.city}
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {pump.connectors.slice(0, 3).map((gun) => (
+                                <Button
+                                  key={gun.id}
+                                  size="sm"
+                                  variant={gun.isAvailableForWindow ? "emerald" : "outline"}
+                                  disabled={!gun.isAvailableForWindow}
+                                  onClick={() => {
+                                    setSelectedGun({ pump, gun });
+                                    setActiveTab("preorder");
+                                  }}
+                                >
+                                  Pre-Order #{gun.connectorNumber} ({gun.maxPowerKw}kW)
+                                </Button>
+                              ))}
+                            </div>
                           </div>
-                          <div className="text-xs text-slate-500">
-                            {pump.addressLine1}, {pump.city}
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            {pump.connectors.slice(0, 2).map((gun) => (
-                              <Button
-                                key={gun.id}
-                                size="sm"
-                                variant={gun.isAvailableForWindow ? "emerald" : "outline"}
-                                disabled={!gun.isAvailableForWindow}
-                                onClick={() => {
-                                  setSelectedGun({ pump, gun });
-                                  setActiveTab("preorder");
-                                }}
-                              >
-                                Pre-Order #{gun.connectorNumber} ({gun.maxPowerKw}kW)
-                              </Button>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  ) : displayedNearbyStations.length > 0 ? (
+                  )}
+
+                  {displayedNearbyStations.length > 0 ? (
                     <div className="grid gap-3 md:grid-cols-2">
                       {displayedNearbyStations.slice(0, 4).map((s) => (
                         <div
@@ -1111,13 +1138,13 @@ export default function CustomerDashboardPage() {
                         </div>
                       ))}
                     </div>
-                  ) : (
+                  ) : pumps.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-slate-200 p-5 text-center text-xs text-slate-600">
                       Click <strong>Use My Location</strong> above or open{" "}
                       <strong>EV Pumps &amp; Pre-Order</strong> to search any city for nearby EV
                       chargers.
                     </div>
-                  )}
+                  ) : null}
                 </Card>
               </div>
             )}

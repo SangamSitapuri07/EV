@@ -426,6 +426,10 @@ export async function listEvPumpsWithAvailability(params?: {
 }) {
   await expireStaleHolds();
   const { db } = await ensureDatabaseReady();
+  if (process.env.VITEST !== "true") {
+    const { ensureDemoEvOwnerAccount } = await import("@/db/demo-ev-owner");
+    await ensureDemoEvOwnerAccount(db);
+  }
 
   const start = params?.startTime
     ? new Date(params.startTime)

@@ -1078,6 +1078,39 @@ function ExploreContent() {
               </Card>
             )}
 
+            {/* Pinned Demo Bookable EV Hub Banner when user searches outside Ludhiana */}
+            {wantEv &&
+              !loading &&
+              !facilities.some((f) => f.slug === "demo-parksmart-ev-hub-ludhiana") && (
+                <Card className="p-4 bg-emerald-50/60 border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-bold text-sm text-slate-900">
+                        ParkSmart Demo EV Superhub (Demo)
+                      </span>
+                      <Badge variant="warning">Demo Bookable Hub</Badge>
+                      <Badge variant="success">Live Owner Sync Ready</Badge>
+                    </div>
+                    <p className="text-slate-600">
+                      120 kW CCS2 · 60 kW CCS2 · 22 kW Type 2 AC — available from any city to test
+                      EV slot pre-booking and real-time EV Owner dashboard updates.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <Link href="/dashboard?tab=preorder">
+                      <Button size="sm" variant="emerald">
+                        Pre-Order Demo Slot →
+                      </Button>
+                    </Link>
+                    <Link href="/facilities/demo-parksmart-ev-hub-ludhiana">
+                      <Button size="sm" variant="outline">
+                        Open Hub Page
+                      </Button>
+                    </Link>
+                  </div>
+                </Card>
+              )}
+
             {/* ParkSmart Verified Bookable Facilities */}
             {loading ? (
               <div className="grid gap-4 md:grid-cols-3">

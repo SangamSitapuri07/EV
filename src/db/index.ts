@@ -171,6 +171,8 @@ export async function ensureDatabaseReady(): Promise<DbState> {
           },
         })
         .onConflictDoNothing();
+    }
+    if (process.env.VITEST !== "true") {
       const { ensureDemoEvOwnerAccount } = await import("./demo-ev-owner");
       await ensureDemoEvOwnerAccount(state.db);
     }
