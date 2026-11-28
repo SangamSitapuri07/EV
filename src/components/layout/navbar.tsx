@@ -75,7 +75,10 @@ export function Navbar() {
     { href: "/", label: "Home" },
     { href: "/explore", label: "Explore" },
     ...(!user || user.role === "CUSTOMER" || user.role === "SUPER_ADMIN"
-      ? [{ href: "/dashboard", label: "User Dashboard" }]
+      ? [
+          { href: "/dashboard", label: "User Dashboard" },
+          { href: "/trip-planner", label: "Trip Planner" },
+        ]
       : []),
     ...(!user ||
     user.role === "EV_OPERATOR" ||
@@ -87,9 +90,7 @@ export function Navbar() {
     user?.role === "EV_OPERATOR" ||
     user?.role === "SUPER_ADMIN"
       ? [{ href: "/operator", label: "For Operators" }]
-      : !user
-        ? [{ href: "/trip-planner", label: "Trip Planner" }]
-        : []),
+      : []),
     ...(user?.role === "SUPER_ADMIN" ? [{ href: "/admin", label: "Admin" }] : []),
   ];
 

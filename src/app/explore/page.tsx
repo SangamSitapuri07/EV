@@ -48,7 +48,9 @@ function ExploreContent() {
   const [wantEv, setWantEv] = useState(
     initialEvParam === "true" || initialEvParam === null || initialEvParam === ""
   );
-  const [connectorStandard, setConnectorStandard] = useState("");
+  const [connectorStandard, setConnectorStandard] = useState(
+    searchParams.get("connectorStandard") ?? ""
+  );
   const [minPowerKw, setMinPowerKw] = useState(searchParams.get("minPowerKw") ?? "");
   const [maxPriceInr, setMaxPriceInr] = useState("500");
   const [radiusKm, setRadiusKm] = useState("25");

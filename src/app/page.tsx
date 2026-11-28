@@ -130,7 +130,7 @@ export default async function LandingPage() {
                 EV Chargers Near Me
               </Link>
               <Link
-                href="/dashboard"
+                href="/dashboard?tab=preorder"
                 className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-[#0F2942]/80 px-4 py-2.5 text-xs font-semibold text-white backdrop-blur hover:bg-[#173A5E] transition"
               >
                 <Zap className="h-4 w-4 text-emerald-400" />
@@ -274,7 +274,7 @@ export default async function LandingPage() {
             </div>
             <div className="relative pt-6">
               <Link
-                href="/dashboard"
+                href="/dashboard?tab=preorder"
                 className="inline-flex items-center gap-2 rounded-xl bg-white px-5 py-2.5 text-xs font-bold text-[#047857] shadow hover:bg-emerald-50 transition"
               >
                 Pre-Order EV Pump
@@ -285,15 +285,15 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* Verified Hubs Row (only shown when real verified hubs exist in DB, otherwise live map CTA) */}
+      {/* Featured EV & Parking Hubs */}
       <section className="mx-auto max-w-7xl px-4 pb-16 sm:px-6 lg:px-8">
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
           <div>
             <h2 className="text-xl font-extrabold text-slate-900">
-              Verified EV &amp; Parking Hubs
+              Bookable EV &amp; Parking Hubs
             </h2>
             <p className="text-xs text-slate-500">
-              Real-time verified hubs and live OpenStreetMap chargers near your location
+              ParkSmart bookable hubs and public EV chargers near your location
             </p>
           </div>
           <Link href="/explore">
@@ -336,7 +336,14 @@ export default async function LandingPage() {
                 />
                 <div className="p-4 flex-1 flex flex-col justify-between space-y-3">
                   <div>
-                    <h3 className="font-bold text-slate-900">{fac.name}</h3>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="font-bold text-slate-900">{fac.name}</h3>
+                      {fac.dataSourceType === "SIMULATED" && (
+                        <span className="rounded bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                          Demo Hub
+                        </span>
+                      )}
+                    </div>
                     <div className="mt-1 flex items-center justify-between text-xs text-slate-600">
                       <span>
                         <strong className="text-slate-900">{formatPaise(fac.hourlyRatePaise)}</strong>
