@@ -38,9 +38,13 @@ function LoginContent() {
 
   const [loginMode, setLoginMode] = useState<"customer" | "ev_owner">(initialMode);
   const urlErrCode = searchParams.get("error");
-  const [error, setError] = useState<string | null>(() =>
-    urlErrCode && OAUTH_ERROR_MESSAGES[urlErrCode] ? OAUTH_ERROR_MESSAGES[urlErrCode] : null
-  );
+  const urlErrDetail = searchParams.get("detail");
+  const [error, setError] = useState<string | null>(() => {
+    if (!urlErrCode || !OAUTH_ERROR_MESSAGES[urlErrCode]) return null;
+    return urlErrDetail
+      ? `${OAUTH_ERROR_MESSAGES[urlErrCode]} (${urlErrDetail})`
+      : OAUTH_ERROR_MESSAGES[urlErrCode];
+  });
   const [recoveryInfo, setRecoveryInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 

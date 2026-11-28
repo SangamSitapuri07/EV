@@ -5,11 +5,13 @@ import { seedIfEmpty } from "@/db/seed-data";
 import { auditLogs, oauthAccounts, operators, userProfiles, users } from "@/db/schema";
 import {
   createGoogleAuthorizationRequest,
+  getGoogleRedirectUri,
   handleGoogleOAuthCallback,
   isGoogleOAuthConfigured,
   resolveOrCreateGoogleUser,
   sanitizeRelativeRedirect,
 } from "@/features/auth/google-oauth.service";
+import { GET as googleAuthStart } from "@/app/api/v1/auth/google/route";
 import { verifySessionToken } from "@/lib/auth";
 
 describe("Google OAuth 2.0 / OIDC (PKCE, CSRF State & Account Linking)", () => {
@@ -207,5 +209,63 @@ describe("Google OAuth 2.0 / OIDC (PKCE, CSRF State & Account Linking)", () => {
       .limit(1);
     expect(opRow).toBeDefined();
     expect(opRow?.status).toBe("APPROVED");
+  });
+
+  it("uses the active request origin for redirect_uri instead of stale APP_URL, and avoids Secure cookie on HTTP localhost", async () => {
+    process.env.GOOGLE_CLIENT_ID = "test-client-id.apps.googleusercontent.com";
+    process.env.GOOGLE_CLIENT_SECRET = "test-client-secret";
+    process.env.APP_URL = "http://localhost:3000";
+
+    const lanReq = new Request("http://127.0.0.1:3000/api/v1/auth/google", {
+      headers: { host: "127.0.0.1:3000" },
+    });
+    expect(getGoogleRedirectUri(lanReq)).toBe(
+      "http://127.0.0.1:3000/api/v1/auth/google/callback"
+    );
+
+    const startRes = await googleAuthStart(lanReq);
+    expect(startRes.status).toBe(302);
+    const setCookie = startRes.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("sm_oauth_state=");
+    expect(setCookie.toLowerCase()).not.toContain("; secure");
+
+    process.env.GOOGLE_OAUTH_REDIRECT_URI = "https://custom.example.com/api/v1/auth/google/callback";
+    expect(getGoogleRedirectUri(lanReq)).toBe(
+      "https://custom.example.com/api/v1/auth/google/callback"
+    );
+    delete process.env.APP_URL;
+  });
+
+  it("surfaces Google token endpoint error details when token exchange fails", async () => {
+    process.env.GOOGLE_CLIENT_ID = "test-client-id.apps.googleusercontent.com";
+    process.env.GOOGLE_CLIENT_SECRET = "test-client-secret";
+
+    const req = new Request("http://localhost:3000/api/v1/auth/google");
+    const { authorizationUrl, stateCookieJwt } = await createGoogleAuthorizationRequest({ req });
+    const state = new URL(authorizationUrl).searchParams.get("state")!;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            error: "redirect_uri_mismatch",
+            error_description: "The redirect URI in the request does not match.",
+          }),
+          { status: 400 }
+        )
+      )
+    );
+
+    await expect(
+      handleGoogleOAuthCallback({
+        req: new Request(
+          `http://localhost:3000/api/v1/auth/google/callback?code=abc&state=${state}`
+        ),
+        code: "abc",
+        state,
+        stateCookieToken: stateCookieJwt,
+      })
+    ).rejects.toThrow(/redirect_uri_mismatch/i);
   });
 });

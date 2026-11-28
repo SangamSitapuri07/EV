@@ -49,7 +49,7 @@ export async function GET(req: Request) {
       httpOnly: true,
       sameSite: "lax",
       path: "/",
-      secure: process.env.NODE_ENV === "production" || origin.startsWith("https://"),
+      secure: origin.startsWith("https://"),
       maxAge: 60 * 10,
     });
 

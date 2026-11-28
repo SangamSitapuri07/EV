@@ -72,7 +72,11 @@ export function resolveRequestOrigin(req: Request): string {
 export function getGoogleRedirectUri(req: Request): string {
   const override = process.env.GOOGLE_OAUTH_REDIRECT_URI?.trim();
   if (override) return override;
-  const base = process.env.APP_URL?.trim() || resolveRequestOrigin(req);
+  const origin = resolveRequestOrigin(req);
+  const base =
+    origin && !origin.endsWith("://")
+      ? origin
+      : process.env.APP_URL?.trim() || "http://localhost:3000";
   return `${base.replace(/\/+$/, "")}/api/v1/auth/google/callback`;
 }
 
@@ -393,7 +397,26 @@ export async function handleGoogleOAuthCallback(params: {
   });
 
   if (!tokenRes.ok) {
-    throw new AppError(401, "OAUTH_TOKEN_EXCHANGE_FAILED", "Google token exchange failed");
+    let googleErr = "";
+    let googleDesc = "";
+    try {
+      const errBody = (await tokenRes.json()) as {
+        error?: string;
+        error_description?: string;
+      };
+      googleErr = errBody.error ?? "";
+      googleDesc = errBody.error_description ?? "";
+    } catch {
+      // ignore non-JSON body
+    }
+    const reason = [googleErr, googleDesc].filter(Boolean).join(": ");
+    throw new AppError(
+      401,
+      "OAUTH_TOKEN_EXCHANGE_FAILED",
+      reason
+        ? `Google token exchange failed (${reason}). Redirect URI used: ${redirectUri}`
+        : `Google token exchange failed (HTTP ${tokenRes.status}). Redirect URI used: ${redirectUri}`
+    );
   }
 
   const tokenData = (await tokenRes.json()) as {
