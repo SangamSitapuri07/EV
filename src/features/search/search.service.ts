@@ -12,6 +12,8 @@ import {
   reviews,
 } from "@/db/schema";
 import { estimateTravelMinutes, haversineKm } from "@/lib/utils";
+import { computeInAppRoute, distanceToPolylineKm } from "@/lib/in-app-navigation";
+import { queryIndiaOpenEvDataset } from "@/features/search/india-ev-dataset";
 import { expireStaleHolds } from "@/features/availability/availability.service";
 
 export const facilitySearchQuerySchema = z
@@ -385,6 +387,20 @@ export async function getCityHeatmapAndInsights() {
   };
 }
 
+function downsamplePolyline(
+  pts: Array<[number, number]>,
+  maxPoints = 120
+): Array<[number, number]> {
+  if (pts.length <= maxPoints) return pts;
+  const out: Array<[number, number]> = [pts[0]!];
+  const step = (pts.length - 1) / (maxPoints - 1);
+  for (let i = 1; i < maxPoints - 1; i++) {
+    out.push(pts[Math.round(i * step)]!);
+  }
+  out.push(pts[pts.length - 1]!);
+  return out;
+}
+
 export async function planEvTrip(params: {
   originLat: number;
   originLng: number;
@@ -394,20 +410,32 @@ export async function planEvTrip(params: {
   vehicleRangeKm: number;
   connectorStandard?: string;
 }) {
-  const totalDistanceKm = haversineKm(
-    params.originLat,
-    params.originLng,
-    params.destLat,
-    params.destLng
-  );
+  const route = await computeInAppRoute({
+    originLat: params.originLat,
+    originLng: params.originLng,
+    destLat: params.destLat,
+    destLng: params.destLng,
+    destinationId: "trip-destination",
+    destinationName: "Destination",
+  });
+
+  const totalDistanceKm = Math.round(route.distanceKm * 10) / 10;
+  const estimatedDriveMinutes =
+    route.durationMinutes > 0
+      ? route.durationMinutes
+      : estimateTravelMinutes(totalDistanceKm);
   const effectiveRangeKm = Math.max(15, (params.currentBatteryPct / 100) * params.vehicleRangeKm);
   const reserveBufferKm = params.vehicleRangeKm * 0.15;
   const needsChargingStop = totalDistanceKm > effectiveRangeKm - reserveBufferKm;
 
+  const midLat = (params.originLat + params.destLat) / 2;
+  const midLng = (params.originLng + params.destLng) / 2;
+  const clampedRadiusKm = Math.min(100, Math.max(25, Math.round(totalDistanceKm / 2 + 15)));
+
   const evResults = await searchFacilities({
-    lat: (params.originLat + params.destLat) / 2,
-    lng: (params.originLng + params.destLng) / 2,
-    radiusKm: Math.max(25, totalDistanceKm + 15),
+    lat: midLat,
+    lng: midLng,
+    radiusKm: clampedRadiusKm,
     hasEvCharging: "true",
     connectorStandard: params.connectorStandard,
     sortBy: "suitability",
@@ -436,13 +464,115 @@ export async function planEvTrip(params: {
       };
     });
 
+  // Sample waypoints along the route polyline to discover public EV charging stops on the corridor
+  const poly =
+    route.coordinates.length >= 2
+      ? route.coordinates
+      : ([
+          [params.originLat, params.originLng],
+          [params.destLat, params.destLng],
+        ] as Array<[number, number]>);
+
+  const sampleFractions = totalDistanceKm > 120 ? [0.25, 0.5, 0.75] : [0.5];
+  const samplePoints = sampleFractions.map((frac) => {
+    const idx = Math.min(poly.length - 1, Math.max(0, Math.round((poly.length - 1) * frac)));
+    return poly[idx]!;
+  });
+  const searchSliceRadius = Math.min(80, Math.max(25, Math.round(totalDistanceKm / 3 + 15)));
+
+  const seenIds = new Set<string>();
+  const corridorCandidates: Array<{
+    id: string;
+    source: string;
+    name: string;
+    operator: string | null;
+    address: string | null;
+    latitude: number;
+    longitude: number;
+    maxPowerKw: number | null;
+    connectorStandards: string[];
+    sockets: string | null;
+    pricing: string | null;
+    freshnessLabel: string;
+    distanceFromOriginKm: number;
+    distanceFromCorridorKm: number;
+    estimatedChargeMinutes: number;
+    listingType: "SOURCE_LISTED";
+    liveAvailabilityConnected: false;
+  }> = [];
+
+  const wantedStd = params.connectorStandard?.trim().toUpperCase();
+
+  for (const [sLat, sLng] of samplePoints) {
+    const res = queryIndiaOpenEvDataset({
+      lat: sLat,
+      lng: sLng,
+      radiusKm: searchSliceRadius,
+    });
+    for (const st of res.stations) {
+      if (seenIds.has(st.id)) continue;
+      if (
+        wantedStd &&
+        wantedStd !== "ALL" &&
+        st.connectorStandards.length > 0 &&
+        !st.connectorStandards.some((c) => c.toUpperCase() === wantedStd)
+      ) {
+        continue;
+      }
+      const corridorDistKm = distanceToPolylineKm([st.latitude, st.longitude], poly).distKm;
+      if (corridorDistKm > 15) continue;
+      seenIds.add(st.id);
+      const fromOriginKm = haversineKm(
+        params.originLat,
+        params.originLng,
+        st.latitude,
+        st.longitude
+      );
+      corridorCandidates.push({
+        id: st.id,
+        source: st.source,
+        name: st.name,
+        operator: st.operator ?? null,
+        address: st.address ?? null,
+        latitude: st.latitude,
+        longitude: st.longitude,
+        maxPowerKw: st.maxPowerKw ?? null,
+        connectorStandards: st.connectorStandards,
+        sockets: st.sockets ?? null,
+        pricing: st.pricing ?? null,
+        freshnessLabel: st.freshnessLabel,
+        distanceFromOriginKm: Math.round(fromOriginKm * 10) / 10,
+        distanceFromCorridorKm: Math.round(corridorDistKm * 10) / 10,
+        estimatedChargeMinutes: (st.maxPowerKw ?? 0) >= 50 ? 28 : 60,
+        listingType: "SOURCE_LISTED",
+        liveAvailabilityConnected: false,
+      });
+    }
+  }
+
+  // Prefer higher-power stations close to the highway corridor, ordered along the route
+  corridorCandidates.sort((a, b) => {
+    const scoreA = (a.maxPowerKw ?? 15) - a.distanceFromCorridorKm * 5;
+    const scoreB = (b.maxPowerKw ?? 15) - b.distanceFromCorridorKm * 5;
+    return scoreB - scoreA;
+  });
+
+  const corridorPublicStops = corridorCandidates
+    .slice(0, 8)
+    .sort((a, b) => a.distanceFromOriginKm - b.distanceFromOriginKm);
+
   return {
+    origin: { lat: params.originLat, lng: params.originLng },
+    destination: { lat: params.destLat, lng: params.destLng },
+    routeSource: route.source,
+    routePolyline: downsamplePolyline(poly, 120),
     totalDistanceKm,
-    estimatedDriveMinutes: estimateTravelMinutes(totalDistanceKm),
+    estimatedDriveMinutes,
     effectiveRangeKm: Math.round(effectiveRangeKm),
     needsChargingStop,
     recommendedStops,
+    corridorPublicStops,
     dataDisclosure:
-      "Estimated travel time and charging stop suggestions are calculated from real route distance and verified station charger ratings.",
+      "Estimated travel distance and charging stop suggestions combine road routing with registered ParkSmart hubs and public EV directory listings (public directory listings do not have live charger availability connected).",
   };
 }

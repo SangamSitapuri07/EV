@@ -89,6 +89,8 @@ function ExploreContent() {
   const [externalNotice, setExternalNotice] = useState<string | null>(null);
   const [loadingOsm, setLoadingOsm] = useState(false);
   const [showAllStations, setShowAllStations] = useState(false);
+  const [listingFilter, setListingFilter] = useState<"ALL" | "BOOKABLE" | "DIRECTORY">("ALL");
+  const [sourceFilter, setSourceFilter] = useState<string>("ALL");
   const [selectedId, setSelectedId] = useState<string | null>(
     () => searchParams.get("stationId") ?? null
   );
@@ -481,6 +483,8 @@ function ExploreContent() {
     setRadiusKm("25");
     setIsCovered("");
     setHasAccessibility("");
+    setListingFilter("ALL");
+    setSourceFilter("ALL");
     setBounds(null);
   }
 
@@ -609,10 +613,16 @@ function ExploreContent() {
       )
     : null;
 
-  const visibleOsmStations = !wantEv && wantParking ? [] : osmStations;
-  const comparedFacilities = facilities.filter((f) => compareIds.includes(f.id));
+  const displayedFacilities = listingFilter === "DIRECTORY" ? [] : facilities;
+  const visibleOsmStations =
+    (!wantEv && wantParking) || listingFilter === "BOOKABLE"
+      ? []
+      : sourceFilter === "ALL"
+        ? osmStations
+        : osmStations.filter((s) => s.source === sourceFilter);
+  const comparedFacilities = displayedFacilities.filter((f) => compareIds.includes(f.id));
   const showEmptyResults =
-    !loading && !error && facilities.length === 0 && visibleOsmStations.length === 0;
+    !loading && !error && displayedFacilities.length === 0 && visibleOsmStations.length === 0;
 
   return (
     <div className="bg-[#F4F7FB] min-h-screen">
@@ -633,7 +643,8 @@ function ExploreContent() {
                   <span className="font-mono">
                     {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
                   </span>{" "}
-                  ({visibleOsmStations.length} public EV chargers + {facilities.length} ParkSmart hubs)
+                  ({visibleOsmStations.length} public EV chargers + {displayedFacilities.length}{" "}
+                  ParkSmart hubs)
                 </span>
               ) : locationStatus === "prompting" ? (
                 <span>Waiting for your browser location permission...</span>
@@ -792,6 +803,36 @@ function ExploreContent() {
             </div>
 
             <div className="space-y-2 border-t border-slate-100 pt-4">
+              <div className="text-xs font-bold text-slate-800">Listing Type</div>
+              <Select
+                value={listingFilter}
+                onChange={(e) =>
+                  setListingFilter(e.target.value as "ALL" | "BOOKABLE" | "DIRECTORY")
+                }
+                aria-label="Listing type filter"
+              >
+                <option value="ALL">All Listings</option>
+                <option value="BOOKABLE">ParkSmart Bookable Hubs</option>
+                <option value="DIRECTORY">Public EV Directory</option>
+              </Select>
+            </div>
+
+            <div className="space-y-2 border-t border-slate-100 pt-4">
+              <div className="text-xs font-bold text-slate-800">Directory Source</div>
+              <Select
+                value={sourceFilter}
+                onChange={(e) => setSourceFilter(e.target.value)}
+                aria-label="Directory data source filter"
+              >
+                <option value="ALL">All EV Sources</option>
+                <option value="INDIA_OPEN_EV_DATA">India EV Dataset (ODbL)</option>
+                <option value="OPEN_STREET_MAP">OpenStreetMap</option>
+                <option value="OPEN_CHARGE_MAP">Open Charge Map</option>
+                <option value="BEE_INDIA_API">BEE India Snapshot</option>
+              </Select>
+            </div>
+
+            <div className="space-y-2 border-t border-slate-100 pt-4">
               <div className="text-xs font-bold text-slate-800">Facilities</div>
               <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
                 <input
@@ -824,7 +865,7 @@ function ExploreContent() {
           {/* Right Main Area */}
           <div className="lg:col-span-9 space-y-6">
             <InteractiveCityMap
-              facilities={facilities}
+              facilities={displayedFacilities}
               osmStations={visibleOsmStations}
               selectedId={selectedId}
               onSelectFacility={setSelectedId}
@@ -1130,9 +1171,9 @@ function ExploreContent() {
                   Reset Filters
                 </Button>
               </Card>
-            ) : facilities.length > 0 ? (
+            ) : displayedFacilities.length > 0 ? (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {facilities.map((fac) => {
+                {displayedFacilities.map((fac) => {
                   const isSelected = fac.id === selectedId;
                   const isCompared = compareIds.includes(fac.id);
                   return (

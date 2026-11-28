@@ -97,7 +97,7 @@ export function formatSourceFreshness(
     month: "short",
     day: "numeric",
   });
-  return `Updated ${formatted}`;
+  return `Dataset snapshot: ${formatted}`;
 }
 
 function normalizeOsmConnectorStandards(tags: Record<string, string>): {
