@@ -458,6 +458,7 @@ export async function getEvPumpsDashboardData(user: SessionUser) {
 
   if (operatorIds.length === 0) {
     return {
+      facilities: [],
       pumps: [],
       preOrders: [],
       chargingSessions: [],
@@ -483,6 +484,7 @@ export async function getEvPumpsDashboardData(user: SessionUser) {
   const facIds = facRows.map((f) => f.id);
   if (facIds.length === 0) {
     return {
+      facilities: [],
       pumps: [],
       preOrders: [],
       chargingSessions: [],

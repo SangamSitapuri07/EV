@@ -139,15 +139,19 @@ export default function EvPumpsDashboardPage() {
         setError(json.error?.message || "Failed to load EV Pumps dashboard");
         return;
       }
-      setData(json.data);
+      const facilitiesList = Array.isArray(json.data?.facilities) ? json.data.facilities : [];
+      setData({
+        ...json.data,
+        facilities: facilitiesList,
+      });
       if (verifRes.ok) {
         const verifJson = await verifRes.json();
         if (verifJson.ok && verifJson.data?.verification) {
           setOwnerVerif(verifJson.data.verification);
         }
       }
-      if (!targetFacId && json.data.facilities.length > 0) {
-        setTargetFacId(json.data.facilities[0].id);
+      if (!targetFacId && facilitiesList.length > 0) {
+        setTargetFacId(facilitiesList[0].id);
       }
     } catch {
       setError("Network error loading EV Pumps dashboard");
@@ -798,44 +802,61 @@ export default function EvPumpsDashboardPage() {
                       <Plus className="h-4 w-4 text-amber-600" />
                       Add New EV Pump Gun
                     </h2>
-                    <form onSubmit={handleAddGun} className="space-y-3">
-                      <Select value={targetFacId} onChange={(e) => setTargetFacId(e.target.value)}>
-                        {data.facilities.map((f) => (
-                          <option key={f.id} value={f.id}>
-                            {f.name}
-                          </option>
-                        ))}
-                      </Select>
-                      <Select value={newStd} onChange={(e) => setNewStd(e.target.value)}>
-                        <option value="CCS2">CCS2 (DC Fast)</option>
-                        <option value="TYPE2_AC">Type 2 AC</option>
-                        <option value="CHADEMO">CHAdeMO</option>
-                        <option value="BHARAT_DC001">Bharat DC-001</option>
-                      </Select>
-                      <div className="grid grid-cols-2 gap-2">
-                        <Input
-                          type="number"
-                          min={3}
-                          max={360}
-                          value={newKw}
-                          onChange={(e) => setNewKw(e.target.value)}
-                          placeholder="Power kW"
-                          required
-                        />
-                        <Input
-                          type="number"
-                          min={5}
-                          max={100}
-                          value={newRateInr}
-                          onChange={(e) => setNewRateInr(e.target.value)}
-                          placeholder="₹ / kWh"
-                          required
-                        />
+                    {(data.facilities ?? []).length === 0 ? (
+                      <div className="space-y-3 text-xs text-slate-600">
+                        <p>
+                          No EV pump facilities registered yet. Add your charging station hub first
+                          before adding pump guns.
+                        </p>
+                        <Link href="/operator" className="block">
+                          <Button type="button" size="sm" variant="outline" className="w-full">
+                            Add EV Hub in Facilities Hub
+                          </Button>
+                        </Link>
                       </div>
-                      <Button type="submit" size="sm" className="w-full">
-                        Add Pump Connector
-                      </Button>
-                    </form>
+                    ) : (
+                      <form onSubmit={handleAddGun} className="space-y-3">
+                        <Select
+                          value={targetFacId}
+                          onChange={(e) => setTargetFacId(e.target.value)}
+                        >
+                          {(data.facilities ?? []).map((f) => (
+                            <option key={f.id} value={f.id}>
+                              {f.name}
+                            </option>
+                          ))}
+                        </Select>
+                        <Select value={newStd} onChange={(e) => setNewStd(e.target.value)}>
+                          <option value="CCS2">CCS2 (DC Fast)</option>
+                          <option value="TYPE2_AC">Type 2 AC</option>
+                          <option value="CHADEMO">CHAdeMO</option>
+                          <option value="BHARAT_DC001">Bharat DC-001</option>
+                        </Select>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Input
+                            type="number"
+                            min={3}
+                            max={360}
+                            value={newKw}
+                            onChange={(e) => setNewKw(e.target.value)}
+                            placeholder="Power kW"
+                            required
+                          />
+                          <Input
+                            type="number"
+                            min={5}
+                            max={100}
+                            value={newRateInr}
+                            onChange={(e) => setNewRateInr(e.target.value)}
+                            placeholder="₹ / kWh"
+                            required
+                          />
+                        </div>
+                        <Button type="submit" size="sm" className="w-full">
+                          Add Pump Connector
+                        </Button>
+                      </form>
+                    )}
                   </Card>
                 </div>
               </div>
