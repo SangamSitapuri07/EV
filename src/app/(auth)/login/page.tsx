@@ -47,6 +47,7 @@ function LoginContent() {
   });
   const [recoveryInfo, setRecoveryInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
 
   const {
     register,
@@ -56,6 +57,25 @@ function LoginContent() {
   } = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
   });
+
+  async function handleDemoOwnerLogin() {
+    setError(null);
+    setDemoLoading(true);
+    try {
+      const res = await fetch("/api/v1/auth/demo-owner", { method: "POST" });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setError(json.error?.message || "Could not sign in as Demo EV Owner");
+        return;
+      }
+      router.push("/ev-pumps");
+      router.refresh();
+    } catch {
+      setError("Network error while signing in to Demo EV Owner");
+    } finally {
+      setDemoLoading(false);
+    }
+  }
 
   async function onSubmit(values: LoginValues) {
     setError(null);
@@ -200,6 +220,27 @@ function LoginContent() {
               }
             />
 
+            {loginMode === "ev_owner" && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5 space-y-2">
+                <div className="text-xs text-emerald-950 font-semibold">
+                  No pump owner documents? Use the built-in Demo EV Owner account:
+                </div>
+                <Button
+                  type="button"
+                  variant="emerald"
+                  size="sm"
+                  className="w-full"
+                  disabled={demoLoading}
+                  onClick={handleDemoOwnerLogin}
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  {demoLoading
+                    ? "Signing into Demo EV Owner..."
+                    : "1-Click Sign In as Demo EV Owner (Pre-Verified Hub)"}
+                </Button>
+              </div>
+            )}
+
             <div className="relative flex items-center py-1">
               <div className="grow border-t border-slate-200" />
               <span className="mx-3 shrink text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -290,10 +331,19 @@ function LoginContent() {
                   <Zap className="h-4 w-4" />
                   EV Owner Access
                 </div>
-                <h2 className="text-lg font-bold">Instant Google Sign-In for Owners</h2>
+                <h2 className="text-lg font-bold">Instant Demo &amp; Google Sign-In for Owners</h2>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  EV Pump Owners can sign in directly with Google right away to add charging stations, set pricing, and manage EV slot pre-orders. Document verification can be completed later.
+                  Use the 1-Click Demo EV Owner account (or sign in with Google) to open the live EV Pumps Dashboard without uploading physical KYC documents. Customer pre-orders sync in real time to this dashboard.
                 </p>
+                <div className="rounded-xl bg-white/10 p-3 text-[11px] text-slate-200 space-y-1">
+                  <div className="font-bold text-emerald-300">Demo EV Owner Credentials (for 2nd window):</div>
+                  <div>
+                    Email: <span className="font-mono text-white">demo.owner@parksmart.demo</span>
+                  </div>
+                  <div>
+                    Password: <span className="font-mono text-white">DemoOwner@123</span>
+                  </div>
+                </div>
               </>
             )}
           </Card>

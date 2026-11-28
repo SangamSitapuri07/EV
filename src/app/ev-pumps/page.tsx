@@ -120,6 +120,7 @@ export default function EvPumpsDashboardPage() {
   const [newStd, setNewStd] = useState("CCS2");
   const [newKw, setNewKw] = useState("120");
   const [newRateInr, setNewRateInr] = useState("18");
+  const [demoSwitching, setDemoSwitching] = useState(false);
 
   const loadData = useCallback(async () => {
     setError(null);
@@ -245,6 +246,44 @@ export default function EvPumpsDashboardPage() {
     }
   }
 
+  async function handleCheckInByRef(bookingReference: string) {
+    setError(null);
+    const res = await fetch("/api/v1/reservations/check-in", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookingReference }),
+    });
+    const json = await res.json();
+    if (json.ok) {
+      setMessage(`Pre-order ${json.data.bookingReference} checked in at EV pump!`);
+      void loadData();
+    } else {
+      setError(json.error?.message || "Check-in failed");
+    }
+  }
+
+  async function handleSwitchToDemoOwner() {
+    setError(null);
+    setDemoSwitching(true);
+    try {
+      const res = await fetch("/api/v1/auth/demo-owner", { method: "POST" });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setError(json.error?.message || "Could not sign into Demo EV Owner account");
+        return;
+      }
+      setMessage(
+        "Signed in as Demo EV Owner (ParkSmart Demo EV Superhub). Customer pre-orders now appear live here."
+      );
+      setTargetFacId("");
+      await loadData();
+    } catch {
+      setError("Network error switching to Demo EV Owner");
+    } finally {
+      setDemoSwitching(false);
+    }
+  }
+
   async function handleCheckOut(reservationId: string) {
     setError(null);
     const res = await fetch(`/api/v1/reservations/${reservationId}/check-out`, {
@@ -278,7 +317,18 @@ export default function EvPumpsDashboardPage() {
           <h1 className="text-xl font-bold text-slate-900">EV Pumps Operator Dashboard</h1>
           <p className="text-sm text-slate-600">{error}</p>
           <div className="flex flex-wrap justify-center gap-3 pt-2">
-            <Link href="/login">
+            <Button
+              type="button"
+              variant="emerald"
+              disabled={demoSwitching}
+              onClick={handleSwitchToDemoOwner}
+            >
+              <Zap className="h-4 w-4" />
+              {demoSwitching
+                ? "Signing in..."
+                : "1-Click Demo EV Owner (No Docs Required)"}
+            </Button>
+            <Link href="/login?role=ev_owner">
               <Button variant="primary">Sign in as EV Operator</Button>
             </Link>
             <Link href="/dashboard">
@@ -402,11 +452,14 @@ export default function EvPumpsDashboardPage() {
             {ownerVerif ? (
               <Card className="p-4 bg-white border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="text-xs space-y-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-bold text-slate-900">
-                      EV Owner Verification: {ownerVerif.ownerName}
+                      EV Owner Profile: {ownerVerif.ownerName}
                     </span>
                     <StatusPill status={ownerVerif.verificationStatus} />
+                    {ownerVerif.panNumber === "DEMOP1234K" && (
+                      <Badge variant="warning">Demo Account (Pre-Verified for Presentation)</Badge>
+                    )}
                   </div>
                   <div className="text-slate-600">
                     PAN: <span className="font-mono">{ownerVerif.panNumber}</span> · Electricity
@@ -419,13 +472,25 @@ export default function EvPumpsDashboardPage() {
             ) : (
               <Card className="p-4 bg-amber-50/70 border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="text-xs text-amber-900">
-                  <strong>Owner Verification Status:</strong> Complete Owner PAN/GSTIN, Location/Electricity Proof &amp; Charger Serial verification to activate new stations.
+                  <strong>No Pump Owner Documents Yet?</strong> Use our pre-verified Demo EV Owner hub for live presentation, or submit PAN/GSTIN &amp; Charger Serial docs to activate your own hub.
                 </div>
-                <Link href="/register?role=EV_OPERATOR">
-                  <Button size="sm" variant="primary">
-                    Submit Verification Docs
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="emerald"
+                    disabled={demoSwitching}
+                    onClick={handleSwitchToDemoOwner}
+                  >
+                    <Zap className="h-3.5 w-3.5" />
+                    {demoSwitching ? "Switching..." : "Switch to Demo EV Owner"}
                   </Button>
-                </Link>
+                  <Link href="/register?role=EV_OPERATOR">
+                    <Button size="sm" variant="outline">
+                      Submit Verification Docs
+                    </Button>
+                  </Link>
+                </div>
               </Card>
             )}
 
@@ -752,12 +817,21 @@ export default function EvPumpsDashboardPage() {
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-3">
-                            <div className="text-right">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="text-right mr-1">
                               <div className="font-bold text-slate-900">
                                 {formatPaise(ord.finalAmountPaise ?? ord.totalEstimatedPaise)}
                               </div>
                             </div>
+                            {ord.status === "CONFIRMED" && (
+                              <Button
+                                size="sm"
+                                variant="emerald"
+                                onClick={() => handleCheckInByRef(ord.bookingReference)}
+                              >
+                                Check In
+                              </Button>
+                            )}
                             {["CHECKED_IN", "ACTIVE"].includes(ord.status) && (
                               <Button
                                 size="sm"

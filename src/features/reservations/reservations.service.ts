@@ -859,6 +859,18 @@ export async function checkOutParkingSession(params: {
         .where(eq(parkingSpaces.id, res.parkingSpaceId));
     }
 
+    if (res.connectorId) {
+      await tx
+        .update(connectors)
+        .set({ status: "AVAILABLE", statusUpdatedAt: now })
+        .where(
+          and(
+            eq(connectors.id, res.connectorId),
+            inArray(connectors.status, ["HELD", "RESERVED", "CHARGING"])
+          )
+        );
+    }
+
     if (overstayFeePaise > 0) {
       await tx.insert(reservationItems).values({
         reservationId: res.id,

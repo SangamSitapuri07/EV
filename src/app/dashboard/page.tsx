@@ -462,9 +462,10 @@ export default function CustomerDashboardPage() {
     const es = new EventSource("/api/v1/events/stream");
     es.addEventListener("platform_event", () => {
       void loadEvPumps();
+      void loadOverview();
     });
     return () => es.close();
-  }, [loadEvPumps]);
+  }, [loadEvPumps, loadOverview]);
 
   useEffect(() => {
     if (!selectedGun) return;
@@ -1380,6 +1381,9 @@ export default function CustomerDashboardPage() {
                                       {pump.stationName}
                                     </h3>
                                     <Badge variant="info">{pump.networkProvider}</Badge>
+                                    {pump.isSimulated && (
+                                      <Badge variant="warning">Demo Hub</Badge>
+                                    )}
                                   </div>
                                   <div className="text-xs text-slate-600 flex items-center gap-1 mt-0.5">
                                     <MapPin className="h-3.5 w-3.5" />
