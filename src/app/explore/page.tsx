@@ -63,12 +63,24 @@ function ExploreContent() {
     west: number;
   } | null>(null);
 
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const initialLatNum = Number(searchParams.get("lat"));
+  const initialLngNum = Number(searchParams.get("lng"));
+  const hasValidCoordsParam =
+    searchParams.get("lat") !== null &&
+    searchParams.get("lng") !== null &&
+    Number.isFinite(initialLatNum) &&
+    Number.isFinite(initialLngNum);
+
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(() =>
+    hasValidCoordsParam ? { lat: initialLatNum, lng: initialLngNum } : null
+  );
   const [isDefaultLocation, setIsDefaultLocation] = useState(false);
-  const [locationLabel, setLocationLabel] = useState<string | null>(null);
+  const [locationLabel, setLocationLabel] = useState<string | null>(() =>
+    hasValidCoordsParam ? "Selected Station Area" : null
+  );
   const [locationStatus, setLocationStatus] = useState<
     "idle" | "prompting" | "granted" | "denied"
-  >("idle");
+  >(() => (hasValidCoordsParam ? "granted" : "idle"));
   const [locationError, setLocationError] = useState<string | null>(null);
 
   const [facilities, setFacilities] = useState<FacilitySearchResultItem[]>([]);
@@ -77,7 +89,9 @@ function ExploreContent() {
   const [externalNotice, setExternalNotice] = useState<string | null>(null);
   const [loadingOsm, setLoadingOsm] = useState(false);
   const [showAllStations, setShowAllStations] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => searchParams.get("stationId") ?? null
+  );
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -302,6 +316,16 @@ function ExploreContent() {
   // Only auto-fetch browser GPS on mount when permission is ALREADY granted (never silently probe otherwise)
   useEffect(() => {
     if (typeof window === "undefined" || navigator.userAgent.includes("jsdom")) return;
+    if (hasValidCoordsParam) {
+      const timer = setTimeout(() => {
+        void fetchNearbyExternalChargers(
+          initialLatNum,
+          initialLngNum,
+          Number(radiusKm) || 25
+        );
+      }, 0);
+      return () => clearTimeout(timer);
+    }
     if (q.trim()) {
       const timer = setTimeout(() => {
         void resolveCityQuery(q.trim());

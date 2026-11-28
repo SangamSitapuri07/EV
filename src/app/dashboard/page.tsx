@@ -25,6 +25,8 @@ import {
   BatteryCharging,
   MapPin,
   Star,
+  LocateFixed,
+  Navigation,
 } from "lucide-react";
 import {
   Badge,
@@ -35,6 +37,10 @@ import {
   Skeleton,
   StatusPill,
 } from "@/components/ui/primitives";
+import type {
+  ExternalEvChargerStation,
+  NearbyChargersResult,
+} from "@/features/search/nearby-chargers.shared";
 import { formatPaise, getFacilityPhoto } from "@/lib/utils";
 
 interface EvPumpListing {
@@ -168,6 +174,16 @@ export default function CustomerDashboardPage() {
   const [pumpsLoading, setPumpsLoading] = useState(false);
   const [pumpQuery, setPumpQuery] = useState("");
   const [standardFilter, setStandardFilter] = useState("ALL");
+  const [nearbyRadiusKm, setNearbyRadiusKm] = useState("25");
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [locationLabel, setLocationLabel] = useState<string | null>(null);
+  const [locationStatus, setLocationStatus] = useState<
+    "idle" | "prompting" | "granted" | "denied"
+  >("idle");
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [nearbyStations, setNearbyStations] = useState<ExternalEvChargerStation[]>([]);
+  const [nearbyLoading, setNearbyLoading] = useState(false);
+  const [nearbyNotice, setNearbyNotice] = useState<string | null>(null);
   const [slotStartLocal, setSlotStartLocal] = useState(() =>
     toLocalInputValue(new Date(Date.now() + 30 * 60_000))
   );
@@ -243,6 +259,163 @@ export default function CustomerDashboardPage() {
     }
   }, [slotStartLocal, slotDurationHours, standardFilter, pumpQuery]);
 
+  const loadNearbyChargers = useCallback(
+    async (lat: number, lng: number, km: number, standard?: string) => {
+      setNearbyLoading(true);
+      setNearbyNotice(null);
+      try {
+        const params = new URLSearchParams({
+          lat: String(lat),
+          lng: String(lng),
+          radiusKm: String(Math.min(100, Math.max(1, km))),
+        });
+        if (standard && standard !== "ALL") {
+          params.set("connectorStandard", standard);
+        }
+        const res = await fetch(`/api/v1/ev-chargers/nearby?${params.toString()}`);
+        const json = (await res.json()) as {
+          ok: boolean;
+          data?: NearbyChargersResult;
+          error?: { message?: string };
+        };
+        if (!res.ok || !json.ok || !json.data) {
+          setNearbyStations([]);
+          setNearbyNotice(
+            json.error?.message || "Could not load nearby public EV charging stations."
+          );
+          return;
+        }
+        setNearbyStations(json.data.stations);
+      } catch {
+        setNearbyStations([]);
+        setNearbyNotice("Network error while tracking nearby EV charging stations.");
+      } finally {
+        setNearbyLoading(false);
+      }
+    },
+    []
+  );
+
+  const requestUserLocation = useCallback(() => {
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      setLocationStatus("denied");
+      setLocationError(
+        "Browser GPS requires https:// or http://localhost. Enter your city in Search Hub / City instead."
+      );
+      return;
+    }
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setLocationStatus("denied");
+      setLocationError(
+        "Geolocation is not supported in this browser. Enter your city in Search Hub / City."
+      );
+      return;
+    }
+    setLocationStatus("prompting");
+    setLocationError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setUserLocation(coords);
+        setLocationLabel("Your Current GPS Location");
+        setLocationStatus("granted");
+        setLocationError(null);
+        void loadNearbyChargers(
+          coords.lat,
+          coords.lng,
+          Number(nearbyRadiusKm) || 25,
+          standardFilter
+        );
+      },
+      (geoErr) => {
+        setLocationStatus("denied");
+        setLocationError(
+          geoErr.code === geoErr.PERMISSION_DENIED
+            ? "Location permission was declined. Enter a city (e.g. Jalandhar, Ludhiana) in Search Hub / City."
+            : "Could not detect GPS coordinates. Enter a city in Search Hub / City."
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  }, [loadNearbyChargers, nearbyRadiusKm, standardFilter]);
+
+  const handleCheckAvailability = useCallback(async () => {
+    setLocationError(null);
+    void loadEvPumps();
+
+    const trimmed = pumpQuery.trim();
+    if (!trimmed) {
+      if (userLocation) {
+        await loadNearbyChargers(
+          userLocation.lat,
+          userLocation.lng,
+          Number(nearbyRadiusKm) || 25,
+          standardFilter
+        );
+      } else {
+        requestUserLocation();
+      }
+      return;
+    }
+
+    // Try geocoding city / hub name so searching "Jalandhar", "Ludhiana", etc. finds real EV stations there
+    setNearbyLoading(true);
+    try {
+      const geoRes = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(
+          trimmed
+        )}`
+      );
+      if (geoRes.ok) {
+        const rows = (await geoRes.json()) as Array<{
+          lat: string;
+          lon: string;
+          display_name: string;
+        }>;
+        if (rows[0]) {
+          const coords = { lat: Number(rows[0].lat), lng: Number(rows[0].lon) };
+          if (Number.isFinite(coords.lat) && Number.isFinite(coords.lng)) {
+            setUserLocation(coords);
+            setLocationLabel(rows[0].display_name.split(",").slice(0, 2).join(", "));
+            setLocationStatus("granted");
+            await loadNearbyChargers(
+              coords.lat,
+              coords.lng,
+              Number(nearbyRadiusKm) || 25,
+              standardFilter
+            );
+            return;
+          }
+        }
+      }
+      if (userLocation) {
+        // Fallback: keep current GPS stations and filter client-side by station/operator keyword
+        await loadNearbyChargers(
+          userLocation.lat,
+          userLocation.lng,
+          Number(nearbyRadiusKm) || 25,
+          standardFilter
+        );
+      } else {
+        setNearbyLoading(false);
+        setLocationError(
+          `Could not locate "${trimmed}". Allow GPS location or enter a city name (e.g. Jalandhar, Ludhiana, Delhi).`
+        );
+      }
+    } catch {
+      setNearbyLoading(false);
+      setLocationError("Could not search that city right now. Allow GPS location or try again.");
+    }
+  }, [
+    loadEvPumps,
+    pumpQuery,
+    userLocation,
+    nearbyRadiusKm,
+    standardFilter,
+    loadNearbyChargers,
+    requestUserLocation,
+  ]);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       void loadOverview();
@@ -250,6 +423,40 @@ export default function CustomerDashboardPage() {
     }, 0);
     return () => clearTimeout(timer);
   }, [loadOverview, loadEvPumps]);
+
+  // Auto-detect nearby EV stations on mount when browser geolocation permission is already granted
+  useEffect(() => {
+    if (typeof window === "undefined" || navigator.userAgent.includes("jsdom")) return;
+    let cancelled = false;
+    if (navigator.permissions?.query) {
+      void navigator.permissions
+        .query({ name: "geolocation" })
+        .then((perm) => {
+          if (!cancelled && perm.state === "granted") {
+            requestUserLocation();
+          }
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Refresh nearby chargers when radius or connector standard changes while location is active
+  useEffect(() => {
+    if (!userLocation) return;
+    const timer = setTimeout(() => {
+      void loadNearbyChargers(
+        userLocation.lat,
+        userLocation.lng,
+        Number(nearbyRadiusKm) || 25,
+        standardFilter
+      );
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [userLocation, nearbyRadiusKm, standardFilter, loadNearbyChargers]);
 
   useEffect(() => {
     const es = new EventSource("/api/v1/events/stream");
@@ -538,6 +745,19 @@ export default function CustomerDashboardPage() {
     .reduce((sum, p) => sum + p.amountPaise, 0);
   const unreadCount = data.notifications.filter((n) => !n.isRead).length;
   const firstName = data.user.fullName.split(" ")[0] || data.user.fullName;
+  const queryLower = pumpQuery.trim().toLowerCase();
+  const filteredNearbyStations = queryLower
+    ? nearbyStations.filter((s) => {
+        const hay = `${s.name} ${s.operator ?? ""} ${s.address ?? ""} ${s.connectorStandards.join(" ")}`.toLowerCase();
+        // If user searched a city name that geocoded the center, all stations in that city area match;
+        // if they searched a brand/operator/street keyword, show matching stations (or all if none match text because city name matched geocode)
+        return hay.includes(queryLower);
+      })
+    : nearbyStations;
+  const displayedNearbyStations =
+    queryLower && filteredNearbyStations.length > 0
+      ? filteredNearbyStations
+      : nearbyStations;
 
   const sidebarItems = [
     { id: "overview", label: "Dashboard", icon: LayoutDashboard },
@@ -671,9 +891,9 @@ export default function CustomerDashboardPage() {
                 <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50 text-amber-500">
                   <Star className="h-4.5 w-4.5 fill-amber-400" />
                 </div>
-                <div className="text-xs text-slate-500">EV Pumps Live</div>
+                <div className="text-xs text-slate-500">EV Stations Nearby</div>
                 <div className="text-lg font-extrabold text-slate-900">
-                  {pumps.length} Stations
+                  {pumps.length + displayedNearbyStations.length} Stations
                 </div>
               </Card>
             </div>
@@ -779,60 +999,124 @@ export default function CustomerDashboardPage() {
                   )}
                 </Card>
 
-                {/* Quick EV Pumps Preview Strip */}
+                {/* Quick EV Pumps & Nearby Chargers Preview Strip */}
                 <Card className="p-5 bg-white border-slate-200/80 shadow-xs space-y-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <h2 className="text-base font-extrabold text-slate-900">
-                        Available EV Pumps for Pre-Order
+                        Nearby EV Charging Stations
                       </h2>
                       <p className="text-xs text-slate-500">
-                        Pick a pump connector to pre-order your charging slot immediately
+                        {userLocation
+                          ? `Showing stations within ${nearbyRadiusKm} km of ${locationLabel ?? "your location"}`
+                          : "Allow location access to automatically track EV charging stations near you"}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("preorder")}
-                      className="text-xs font-semibold text-blue-600 hover:underline cursor-pointer"
-                    >
-                      All EV Pumps →
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {!userLocation && (
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          onClick={requestUserLocation}
+                          disabled={locationStatus === "prompting"}
+                        >
+                          <LocateFixed className="h-3.5 w-3.5" />
+                          {locationStatus === "prompting"
+                            ? "Locating..."
+                            : "Use My Location"}
+                        </Button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("preorder")}
+                        className="text-xs font-semibold text-blue-600 hover:underline cursor-pointer"
+                      >
+                        All EV Stations →
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="grid gap-3 md:grid-cols-2">
-                    {pumps.slice(0, 2).map((pump) => (
-                      <div
-                        key={pump.stationId}
-                        className="rounded-xl border border-slate-200 p-4 space-y-2.5"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="font-bold text-sm text-slate-900">{pump.stationName}</div>
-                          <Badge variant={pump.freeCount > 0 ? "success" : "danger"}>
-                            {pump.freeCount}/{pump.totalCount} Free
-                          </Badge>
+                  {pumps.length > 0 ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {pumps.slice(0, 2).map((pump) => (
+                        <div
+                          key={pump.stationId}
+                          className="rounded-xl border border-slate-200 p-4 space-y-2.5"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="font-bold text-sm text-slate-900">{pump.stationName}</div>
+                            <Badge variant={pump.freeCount > 0 ? "success" : "danger"}>
+                              {pump.freeCount}/{pump.totalCount} Free
+                            </Badge>
+                          </div>
+                          <div className="text-xs text-slate-500">
+                            {pump.addressLine1}, {pump.city}
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {pump.connectors.slice(0, 2).map((gun) => (
+                              <Button
+                                key={gun.id}
+                                size="sm"
+                                variant={gun.isAvailableForWindow ? "emerald" : "outline"}
+                                disabled={!gun.isAvailableForWindow}
+                                onClick={() => {
+                                  setSelectedGun({ pump, gun });
+                                  setActiveTab("preorder");
+                                }}
+                              >
+                                Pre-Order #{gun.connectorNumber} ({gun.maxPowerKw}kW)
+                              </Button>
+                            ))}
+                          </div>
                         </div>
-                        <div className="text-xs text-slate-500">
-                          {pump.addressLine1}, {pump.city}
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {pump.connectors.slice(0, 2).map((gun) => (
-                            <Button
-                              key={gun.id}
-                              size="sm"
-                              variant={gun.isAvailableForWindow ? "emerald" : "outline"}
-                              disabled={!gun.isAvailableForWindow}
-                              onClick={() => {
-                                setSelectedGun({ pump, gun });
-                                setActiveTab("preorder");
-                              }}
+                      ))}
+                    </div>
+                  ) : displayedNearbyStations.length > 0 ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {displayedNearbyStations.slice(0, 4).map((s) => (
+                        <div
+                          key={s.id}
+                          className="rounded-xl border border-slate-200 p-4 space-y-2"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="font-bold text-sm text-slate-900 truncate">
+                              {s.name}
+                            </div>
+                            <span className="shrink-0 rounded bg-teal-50 px-2 py-0.5 text-[10px] font-bold text-teal-800">
+                              {s.distanceKm} km away
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-600">
+                            {s.operator ?? "Public EV Charger"}
+                            {s.pricing ? ` · ${s.pricing}` : ""}
+                          </div>
+                          {s.address && (
+                            <div className="text-[11px] text-slate-500 line-clamp-1">
+                              {s.address}
+                            </div>
+                          )}
+                          <div className="flex items-center justify-between pt-1">
+                            <span className="text-[10px] font-semibold text-slate-500">
+                              Live availability not connected
+                            </span>
+                            <Link
+                              href={`/explore?lat=${s.latitude}&lng=${s.longitude}&stationId=${encodeURIComponent(s.id)}`}
+                              className="inline-flex items-center gap-1 text-xs font-bold text-blue-700 hover:underline"
                             >
-                              Pre-Order #{gun.connectorNumber} ({gun.maxPowerKw}kW)
-                            </Button>
-                          ))}
+                              <Navigation className="h-3 w-3" />
+                              Navigate
+                            </Link>
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-slate-200 p-5 text-center text-xs text-slate-600">
+                      Click <strong>Use My Location</strong> above or open{" "}
+                      <strong>EV Pumps &amp; Pre-Order</strong> to search any city for nearby EV
+                      chargers.
+                    </div>
+                  )}
                 </Card>
               </div>
             )}
@@ -840,6 +1124,77 @@ export default function CustomerDashboardPage() {
             {/* PRE-ORDER EV PUMPS TAB */}
             {activeTab === "preorder" && (
               <div className="space-y-5">
+                {/* Location Access & Summary Banner */}
+                <Card className="p-4 bg-white border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 text-xs text-slate-700">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-600 shrink-0">
+                      <LocateFixed className="h-4 w-4" />
+                    </span>
+                    <div>
+                      {userLocation ? (
+                        <span>
+                          <strong className="text-slate-900">
+                            Found {pumps.length + displayedNearbyStations.length} EV charging
+                            station{pumps.length + displayedNearbyStations.length === 1 ? "" : "s"}
+                          </strong>{" "}
+                          within {nearbyRadiusKm} km of{" "}
+                          <strong className="text-slate-900">
+                            {locationLabel ?? "your location"}
+                          </strong>{" "}
+                          ({pumps.length} bookable ParkSmart · {displayedNearbyStations.length}{" "}
+                          directory listings). Pick any station below to go charge.
+                        </span>
+                      ) : (
+                        <span>
+                          <strong className="text-slate-900">Track Nearby EV Points:</strong> Allow
+                          location access or type your city in <em>Search Hub / City</em> to see
+                          all nearby EV charging stations.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Select
+                      value={nearbyRadiusKm}
+                      onChange={(e) => setNearbyRadiusKm(e.target.value)}
+                      aria-label="Nearby search radius"
+                      className="w-28"
+                    >
+                      <option value="10">Within 10 km</option>
+                      <option value="25">Within 25 km</option>
+                      <option value="50">Within 50 km</option>
+                      <option value="100">Within 100 km</option>
+                    </Select>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={requestUserLocation}
+                      disabled={locationStatus === "prompting"}
+                    >
+                      <LocateFixed className="h-3.5 w-3.5" />
+                      {locationStatus === "prompting"
+                        ? "Locating..."
+                        : userLocation
+                          ? "Refresh GPS"
+                          : "Allow Location"}
+                    </Button>
+                  </div>
+                </Card>
+
+                {locationError && (
+                  <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span>{locationError}</span>
+                  </div>
+                )}
+
+                {nearbyNotice && (
+                  <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span>{nearbyNotice}</span>
+                  </div>
+                )}
+
                 <Card className="p-4 bg-white border-slate-200/80 grid gap-3 sm:grid-cols-2 lg:grid-cols-5 items-end">
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
@@ -887,10 +1242,20 @@ export default function CustomerDashboardPage() {
                     <Input
                       value={pumpQuery}
                       onChange={(e) => setPumpQuery(e.target.value)}
-                      placeholder="Ferozepur Rd, CCS2..."
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleCheckAvailability();
+                        }
+                      }}
+                      placeholder="City or hub (e.g. Jalandhar, Delhi)"
                     />
                   </div>
-                  <Button onClick={() => void loadEvPumps()} variant="primary" className="w-full">
+                  <Button
+                    onClick={() => void handleCheckAvailability()}
+                    variant="primary"
+                    className="w-full"
+                  >
                     Check Availability
                   </Button>
                 </Card>
@@ -982,67 +1347,157 @@ export default function CustomerDashboardPage() {
                   </Card>
                 )}
 
-                {pumpsLoading ? (
+                {pumpsLoading || nearbyLoading ? (
                   <Skeleton className="h-48 w-full" />
-                ) : pumps.length === 0 ? (
-                  <Card className="p-8 text-center text-sm text-slate-600">
-                    No EV pumps match your current filter.
+                ) : pumps.length === 0 && displayedNearbyStations.length === 0 ? (
+                  <Card className="p-8 text-center space-y-3 text-sm text-slate-600">
+                    <div>
+                      {userLocation
+                        ? `No EV charging stations found within ${nearbyRadiusKm} km matching your current filters.`
+                        : "Allow location access or enter a city in Search Hub / City to track nearby EV charging stations."}
+                    </div>
+                    {!userLocation && (
+                      <Button size="sm" variant="primary" onClick={requestUserLocation}>
+                        <LocateFixed className="h-3.5 w-3.5" />
+                        Allow Location &amp; Find Chargers
+                      </Button>
+                    )}
                   </Card>
                 ) : (
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    {pumps.map((pump) => (
-                      <Card key={pump.stationId} className="p-5 bg-white space-y-4">
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h3 className="font-bold text-slate-900">{pump.stationName}</h3>
-                              <Badge variant="info">{pump.networkProvider}</Badge>
-                            </div>
-                            <div className="text-xs text-slate-600 flex items-center gap-1 mt-0.5">
-                              <MapPin className="h-3.5 w-3.5" />
-                              {pump.addressLine1}, {pump.city}
-                            </div>
-                          </div>
-                          <Badge variant={pump.freeCount > 0 ? "success" : "danger"}>
-                            {pump.freeCount}/{pump.totalCount} Slots Free
-                          </Badge>
-                        </div>
-
-                        <div className="space-y-2.5">
-                          {pump.connectors.map((gun) => (
-                            <div
-                              key={gun.id}
-                              className="rounded-xl border border-slate-200 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-                            >
-                              <div className="space-y-0.5">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-bold text-slate-900">
-                                    Gun #{gun.connectorNumber} · {gun.standard}
-                                  </span>
-                                  <Badge variant="info">{gun.maxPowerKw} kW</Badge>
-                                  <StatusPill
-                                    status={gun.isAvailableForWindow ? "AVAILABLE" : gun.status}
-                                  />
+                  <div className="space-y-5">
+                    {pumps.length > 0 && (
+                      <div className="space-y-3">
+                        <h3 className="text-sm font-extrabold text-slate-900">
+                          ParkSmart Verified Bookable EV Pumps ({pumps.length})
+                        </h3>
+                        <div className="grid gap-4 lg:grid-cols-2">
+                          {pumps.map((pump) => (
+                            <Card key={pump.stationId} className="p-5 bg-white space-y-4">
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <h3 className="font-bold text-slate-900">
+                                      {pump.stationName}
+                                    </h3>
+                                    <Badge variant="info">{pump.networkProvider}</Badge>
+                                  </div>
+                                  <div className="text-xs text-slate-600 flex items-center gap-1 mt-0.5">
+                                    <MapPin className="h-3.5 w-3.5" />
+                                    {pump.addressLine1}, {pump.city}
+                                  </div>
                                 </div>
-                                <div className="text-slate-600">
-                                  {formatPaise(gun.pricePerKwhPaise)}/kWh · Session fee{" "}
-                                  {formatPaise(gun.sessionFeePaise)}
-                                </div>
+                                <Badge variant={pump.freeCount > 0 ? "success" : "danger"}>
+                                  {pump.freeCount}/{pump.totalCount} Slots Free
+                                </Badge>
                               </div>
 
-                              <Button
-                                size="sm"
-                                variant={gun.isAvailableForWindow ? "emerald" : "outline"}
-                                disabled={!gun.isAvailableForWindow}
-                                onClick={() => setSelectedGun({ pump, gun })}
-                              >
-                                {gun.isAvailableForWindow ? "Pre-Order Slot" : "Unavailable"}
-                              </Button>
-                            </div>
+                              <div className="space-y-2.5">
+                                {pump.connectors.map((gun) => (
+                                  <div
+                                    key={gun.id}
+                                    className="rounded-xl border border-slate-200 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                                  >
+                                    <div className="space-y-0.5">
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-bold text-slate-900">
+                                          Gun #{gun.connectorNumber} · {gun.standard}
+                                        </span>
+                                        <Badge variant="info">{gun.maxPowerKw} kW</Badge>
+                                        <StatusPill
+                                          status={
+                                            gun.isAvailableForWindow ? "AVAILABLE" : gun.status
+                                          }
+                                        />
+                                      </div>
+                                      <div className="text-slate-600">
+                                        {formatPaise(gun.pricePerKwhPaise)}/kWh · Session fee{" "}
+                                        {formatPaise(gun.sessionFeePaise)}
+                                      </div>
+                                    </div>
+
+                                    <Button
+                                      size="sm"
+                                      variant={gun.isAvailableForWindow ? "emerald" : "outline"}
+                                      disabled={!gun.isAvailableForWindow}
+                                      onClick={() => setSelectedGun({ pump, gun })}
+                                    >
+                                      {gun.isAvailableForWindow ? "Pre-Order Slot" : "Unavailable"}
+                                    </Button>
+                                  </div>
+                                ))}
+                              </div>
+                            </Card>
                           ))}
                         </div>
-                      </Card>
-                    ))}
+                      </div>
+                    )}
+
+                    {displayedNearbyStations.length > 0 && (
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <h3 className="text-sm font-extrabold text-slate-900">
+                            Nearby Public EV Stations ({displayedNearbyStations.length} within{" "}
+                            {nearbyRadiusKm} km)
+                          </h3>
+                          <span className="text-[11px] text-slate-500">
+                            Drive-up public directory listings (slot pre-order requires ParkSmart
+                            partner onboarding)
+                          </span>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          {displayedNearbyStations.slice(0, 30).map((s) => (
+                            <Card key={s.id} className="p-4 bg-white space-y-2 text-xs">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-bold text-sm text-slate-900 truncate">
+                                  {s.name}
+                                </span>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                                    Directory
+                                  </span>
+                                  <span className="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-800">
+                                    {s.source === "INDIA_OPEN_EV_DATA"
+                                      ? "India EV"
+                                      : s.source === "BEE_INDIA_API"
+                                        ? "BEE Snapshot"
+                                        : s.source === "OPEN_CHARGE_MAP"
+                                          ? "OCM"
+                                          : "OSM"}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="text-slate-700 font-medium">
+                                {s.distanceKm} km away
+                                {s.operator ? ` · ${s.operator}` : ""}
+                                {s.pricing ? ` · ${s.pricing}` : ""}
+                              </div>
+                              {s.address && (
+                                <div className="text-[11px] text-slate-500 flex items-start gap-1">
+                                  <MapPin className="h-3.5 w-3.5 shrink-0 mt-0.5 text-slate-400" />
+                                  <span>{s.address}</span>
+                                </div>
+                              )}
+                              {s.sockets && (
+                                <div className="text-[11px] text-slate-600">{s.sockets}</div>
+                              )}
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                                <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">
+                                  <Clock className="h-2.5 w-2.5" />
+                                  Live availability not connected
+                                </span>
+                                <Link
+                                  href={`/explore?lat=${s.latitude}&lng=${s.longitude}&stationId=${encodeURIComponent(s.id)}`}
+                                  className="inline-flex items-center gap-1 font-bold text-blue-700 hover:underline"
+                                >
+                                  <Navigation className="h-3 w-3" />
+                                  Navigate on Map →
+                                </Link>
+                              </div>
+                            </Card>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
